@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2015 Corvette Stingray Z51 — Repair Quote &amp; Used Parts PriceCompare</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="vehicle-title-group">
+        <div class="vehicle-badge-row">
+          <span class="corvette-flag">C7 Stingray Z51 2LT</span>
+          <span class="estimate-pill">Estimate #31065854 &bull; DND Auto Body</span>
+          <span class="estimate-pill">VIN: 1G1YJ2D72F5108806</span>
+        </div>
+        <h1 class="app-title">2015 Chevrolet Corvette Repair &amp; Used Parts Price Tracker</h1>
+        <div class="vehicle-meta">
+          Owner: Michael Endrodi &bull; 6.2L V8 7-Speed Manual RWD &bull; South Amboy, NJ (6.625% Sales Tax)
+        </div>
+      </div>
+
+      <div class="header-actions no-print">
+        <span id="syncIndicator" class="sync-indicator" role="status" aria-live="polite">
+          &#9679; Synced to Disk
+        </span>
+        <button type="button" id="btnNewBundle" class="btn btn-indigo">
+          + New Part Bundle / Assembly
+        </button>
+        <a href="/api/export/xlsx" class="btn btn-emerald" download>
+          &#8681; Export Excel (.xlsx)
+        </a>
+        <button type="button" id="btnPrintShop" class="btn">
+          &#128424; Print Shop Sheet
+        </button>
+        <button type="button" id="btnBackups" class="btn">
+          &#128190; Backups &amp; JSON
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <!-- Top KPI Cards -->
+    <section class="kpi-grid" aria-label="Estimate and Savings Summary">
+      <article class="kpi-card kpi-baseline">
+        <span class="kpi-label" id="lblBaselineTitle">Original Shop Estimate</span>
+        <div class="kpi-value" id="valBaselineTotal">$12,463.38</div>
+        <div class="kpi-sub" id="subBaselineDetail">Parts: $7,451.47 &bull; Labor/Paint: $5,011.91</div>
+      </article>
+
+      <article class="kpi-card kpi-projected">
+        <span class="kpi-label">Projected Total (With Used)</span>
+        <div class="kpi-value" id="valProjectedTotal">$12,463.38</div>
+        <div class="kpi-sub" id="subProjectedDetail">Unsourced parts fall back to OEM New</div>
+      </article>
+
+      <article class="kpi-card kpi-savings">
+        <span class="kpi-label">Total Projected Savings</span>
+        <div class="kpi-value" id="valTotalSavings">$0.00 (0.0%)</div>
+        <div class="kpi-sub" id="subTotalSavingsDetail">Includes parts + optional paint credit</div>
+      </article>
+
+      <article class="kpi-card kpi-sourced">
+        <span class="kpi-label">Savings on Sourced Parts So Far</span>
+        <div class="kpi-value" id="valSourcedSavings">$0.00</div>
+        <div class="kpi-sub" id="subSourcedDetail">0 of 15 parts sourced ($0 used vs $0 OEM)</div>
+      </article>
+
+      <article class="kpi-card kpi-paint">
+        <span class="kpi-label">Same-Color Paint Credit</span>
+        <div class="kpi-value" id="valPaintSavings">$0.00</div>
+        <div class="kpi-sub" id="subPaintDetail">Toggle on Line #6 (Quarter) or #25 (Bumper)</div>
+      </article>
+    </section>
+
+    <!-- View Mode & Toggles Bar -->
+    <section class="controls-panel no-print" aria-label="View Scope and Filters">
+      <div class="scope-group">
+        <div class="segmented-control" role="group" aria-label="Line Item Scope">
+          <button type="button" class="seg-btn active" data-scope="all_new">
+            All 16 "New" Items ($7,451.47)
+          </button>
+          <button type="button" class="seg-btn" data-scope="oem_only">
+            13 OEM Car Parts Only
+          </button>
+          <button type="button" class="seg-btn" data-scope="full_38">
+            All 38 Estimate Lines
+          </button>
+        </div>
+
+        <label class="toggle-pill">
+          <input type="checkbox" id="chkIncludeLaborPaint" checked />
+          <span>Include Fixed Labor ($4,459.59) &amp; Paint ($552.32)</span>
+        </label>
+
+        <label class="toggle-pill">
+          <input type="checkbox" id="chkIncludeTires" checked />
+          <span>Include Tires &amp; Mount ($1,012.94 w/ tax)</span>
+        </label>
+      </div>
+
+      <div class="filter-group">
+        <input
+          type="search"
+          id="inputSearch"
+          class="input-field"
+          placeholder="Search part name, OEM #, vendor..."
+          aria-label="Search parts"
+        />
+        <select id="selectCategory" class="select-field" aria-label="Filter by category">
+          <option value="ALL">All Categories</option>
+        </select>
+        <select id="selectStatus" class="select-field" aria-label="Filter by status">
+          <option value="ALL">All Statuses</option>
+          <option value="Need to Find">Need to Find</option>
+          <option value="Watching / Quoted">Watching / Quoted</option>
+          <option value="Ordered">Ordered</option>
+          <option value="Shipped">Shipped</option>
+          <option value="Delivered">Delivered</option>
+          <option value="At Body Shop">At Body Shop</option>
+          <option value="Shop / Existing">Shop / Existing</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Proportional Part Bundles / Combined Orders Section -->
+    <section class="section-card" aria-labelledby="bundlesHeading">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title" id="bundlesHeading">
+            Proportional Part Bundles &amp; Combined Shipments
+          </h2>
+          <div class="vehicle-meta">
+            Group multiple estimate parts together (e.g., a complete Right Rear Suspension Knee Assembly). We calculate each part's % share of the grouped OEM New price and automatically divide the used bundle price, shipping, and tax by those exact percentages.
+          </div>
+        </div>
+        <button type="button" id="btnQuickSuspBundle" class="btn btn-sm btn-indigo no-print">
+          &#9889; Quick-Create Rear Suspension Assembly Bundle (Lines 16–19)
+        </button>
+      </div>
+      <div id="bundlesContainer" class="bundles-grid"></div>
+    </section>
+
+    <!-- Main Parts Comparison Table (Following `responsive-table` modern web guidance) -->
+    <section class="section-card">
+      <div
+        tabindex="0"
+        role="region"
+        aria-labelledby="parts-table-caption"
+        class="table-wrapper"
+      >
+        <table class="parts-table">
+          <caption id="parts-table-caption">
+            DND Auto Body Estimate Line Items &amp; Used Replacement Comparison
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Line &amp; Part Description</th>
+              <th scope="col">Category</th>
+              <th scope="col">OEM Part #</th>
+              <th scope="col" class="num-col">OEM Quote (w/ Tax)</th>
+              <th scope="col">Sourcing Mode</th>
+              <th scope="col">Active Used Source / Bundle</th>
+              <th scope="col" class="num-col">Used Breakdown</th>
+              <th scope="col" class="num-col">Projected Cost</th>
+              <th scope="col" class="num-col">Net Savings</th>
+              <th scope="col">Status &amp; Tracking</th>
+              <th scope="col" class="action-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="partsTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal 1: Manage Competing Quotes for a Single Line Item (with `closedby="any"`) -->
+  <dialog id="dialogPartQuotes" class="app-dialog" closedby="any" aria-labelledby="dialogPartTitle">
+    <div class="dialog-inner">
+      <div class="dialog-header">
+        <div>
+          <h2 id="dialogPartTitle" class="dialog-title">Manage Used Part Quotes</h2>
+          <div id="dialogPartSub" class="vehicle-meta"></div>
+        </div>
+        <button type="button" class="btn btn-sm" data-close-dialog="dialogPartQuotes">Close &#10005;</button>
+      </div>
+
+      <div>
+        <h3 class="kpi-label">Saved Competing Quotes (Click "Set Active" to use in totals)</h3>
+        <div id="partQuotesList" class="quotes-list"></div>
+      </div>
+
+      <form id="formPartQuote">
+        <input type="hidden" id="pqLineNumber" />
+        <input type="hidden" id="pqQuoteId" />
+        <h3 id="pqFormHeading" class="kpi-label">Add / Edit Used Part Quote</h3>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="pqVendor">Vendor / Source (e.g., eBay, Car-Part, Forum)</label>
+            <input type="text" id="pqVendor" class="input-field" required placeholder="e.g., eBay - C7SalvageParts" />
+          </div>
+          <div class="form-field">
+            <label for="pqListingUrl">Listing URL (Optional)</label>
+            <input type="url" id="pqListingUrl" class="input-field" placeholder="https://..." />
+          </div>
+          <div class="form-field">
+            <label for="pqPrice">Used Part Price ($)</label>
+            <input type="number" id="pqPrice" class="input-field" step="0.01" min="0" required placeholder="0.00" />
+          </div>
+          <div class="form-field">
+            <label for="pqShipping">Shipping Cost ($)</label>
+            <input type="number" id="pqShipping" class="input-field" step="0.01" min="0" value="0" />
+          </div>
+          <div class="form-field">
+            <label for="pqTaxMode">Sales Tax Calculation</label>
+            <select id="pqTaxMode" class="select-field">
+              <option value="rate">Auto 6.625% NJ Tax (Price + Ship)</option>
+              <option value="price_only_rate">Auto 6.625% NJ Tax (Price Only)</option>
+              <option value="none">No Tax ($0.00 — Private / Out-of-State)</option>
+              <option value="manual">Manual Tax Amount ($)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="pqManualTax">Manual Tax ($)</label>
+            <input type="number" id="pqManualTax" class="input-field" step="0.01" min="0" value="0" />
+          </div>
+          <div class="form-field">
+            <label for="pqStatus">Order / Delivery Status</label>
+            <select id="pqStatus" class="select-field">
+              <option value="Watching / Quoted">Watching / Quoted</option>
+              <option value="Ordered">Ordered</option>
+              <option value="Shipped">Shipped</option>
+              <option value="Delivered">Delivered</option>
+              <option value="At Body Shop">At Body Shop</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="pqCarrier">Shipping Carrier</label>
+            <select id="pqCarrier" class="select-field">
+              <option value="">None / Local Pickup</option>
+              <option value="UPS">UPS</option>
+              <option value="FedEx">FedEx</option>
+              <option value="USPS">USPS</option>
+              <option value="Freight">Freight / LTL</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="pqTracking">Tracking Number</label>
+            <input type="text" id="pqTracking" class="input-field" placeholder="e.g., 1Z9999999999999999" />
+          </div>
+          <div class="form-field full-width">
+            <label for="pqNotes">Part Notes (Condition, Mileage, Paint Code, Return Info)</label>
+            <input type="text" id="pqNotes" class="input-field" placeholder="e.g., 28k miles, Torch Red, includes brackets" />
+          </div>
+        </div>
+        <div class="header-actions" style="margin-block-start: 0.9rem; justify-content: flex-end;">
+          <button type="button" id="btnResetPqForm" class="btn btn-sm">Clear Form</button>
+          <button type="submit" class="btn btn-primary">Save Quote &amp; Activate</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Modal 2: Create / Edit Proportional Part Bundle (with `closedby="any"`) -->
+  <dialog id="dialogBundle" class="app-dialog" closedby="any" aria-labelledby="dialogBundleTitle">
+    <div class="dialog-inner">
+      <div class="dialog-header">
+        <div>
+          <h2 id="dialogBundleTitle" class="dialog-title">Create / Edit Proportional Part Bundle</h2>
+          <div class="vehicle-meta">
+            Select the estimate parts included in this bundle, then add one or more competing bundle quotes.
+          </div>
+        </div>
+        <button type="button" class="btn btn-sm" data-close-dialog="dialogBundle">Close &#10005;</button>
+      </div>
+
+      <form id="formBundle">
+        <input type="hidden" id="bndId" />
+        <div class="form-field" style="margin-block-end: 0.75rem;">
+          <label for="bndName">Bundle / Assembly Name</label>
+          <input
+            type="text"
+            id="bndName"
+            class="input-field"
+            required
+            placeholder="e.g., Right Rear Suspension Knee Assembly (Upper/Lower Arms, Shock, Toe Link)"
+          />
+        </div>
+
+        <div class="form-field" style="margin-block-end: 0.75rem;">
+          <label>Check Estimate Parts Included in This Bundle (Auto-calculates OEM % weights):</label>
+          <div id="bndPartsChecklist" class="part-checklist"></div>
+        </div>
+
+        <div id="bndWeightsPreview" class="vehicle-meta" style="margin-block-end: 0.75rem;"></div>
+
+        <div id="bndExistingOptionsSection" style="margin-block-end: 0.85rem;">
+          <h3 class="kpi-label">Saved Bundle Quotes / Vendors</h3>
+          <div id="bndOptionsList" class="quotes-list"></div>
+        </div>
+
+        <h3 id="bndOptHeading" class="kpi-label">Add / Update Bundle Quote Option</h3>
+        <input type="hidden" id="bndOptId" />
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="bndVendor">Vendor / Source</label>
+            <input type="text" id="bndVendor" class="input-field" placeholder="e.g., Midway Auto Parts (Car-Part.com)" />
+          </div>
+          <div class="form-field">
+            <label for="bndListingUrl">Listing URL</label>
+            <input type="url" id="bndListingUrl" class="input-field" placeholder="https://..." />
+          </div>
+          <div class="form-field">
+            <label for="bndPrice">Combined Bundle Price ($)</label>
+            <input type="number" id="bndPrice" class="input-field" step="0.01" min="0" placeholder="0.00" />
+          </div>
+          <div class="form-field">
+            <label for="bndShipping">Combined Shipping ($)</label>
+            <input type="number" id="bndShipping" class="input-field" step="0.01" min="0" value="0" />
+          </div>
+          <div class="form-field">
+            <label for="bndTaxMode">Sales Tax Mode</label>
+            <select id="bndTaxMode" class="select-field">
+              <option value="rate">Auto 6.625% NJ Tax (Price + Ship)</option>
+              <option value="price_only_rate">Auto 6.625% NJ Tax (Price Only)</option>
+              <option value="none">No Tax ($0.00)</option>
+              <option value="manual">Manual Tax ($)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="bndManualTax">Manual Tax ($)</label>
+            <input type="number" id="bndManualTax" class="input-field" step="0.01" min="0" value="0" />
+          </div>
+          <div class="form-field">
+            <label for="bndStatus">Order Status</label>
+            <select id="bndStatus" class="select-field">
+              <option value="Watching / Quoted">Watching / Quoted</option>
+              <option value="Ordered">Ordered</option>
+              <option value="Shipped">Shipped</option>
+              <option value="Delivered">Delivered</option>
+              <option value="At Body Shop">At Body Shop</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="bndCarrier">Shipping Carrier</label>
+            <select id="bndCarrier" class="select-field">
+              <option value="">None / Local Pickup</option>
+              <option value="UPS">UPS</option>
+              <option value="FedEx">FedEx</option>
+              <option value="USPS">USPS</option>
+              <option value="Freight">Freight / LTL</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="bndTracking">Tracking Number</label>
+            <input type="text" id="bndTracking" class="input-field" placeholder="Tracking #" />
+          </div>
+          <div class="form-field full-width">
+            <label for="bndNotes">Bundle Notes</label>
+            <input type="text" id="bndNotes" class="input-field" placeholder="e.g., Complete right rear knee assembly off 2016 Z51 w/ 19k miles" />
+          </div>
+        </div>
+
+        <div class="header-actions" style="margin-block-start: 1rem; justify-content: flex-end;">
+          <button type="submit" class="btn btn-indigo">Save Bundle &amp; Allocate Costs</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Modal 3: Backups, JSON Export/Import & Reset (with `closedby="any"`) -->
+  <dialog id="dialogBackups" class="app-dialog" closedby="any" aria-labelledby="dialogBackupsTitle">
+    <div class="dialog-inner">
+      <div class="dialog-header">
+        <h2 id="dialogBackupsTitle" class="dialog-title">Data Safety, Rolling Backups &amp; JSON Import/Export</h2>
+        <button type="button" class="btn btn-sm" data-close-dialog="dialogBackups">Close &#10005;</button>
+      </div>
+
+      <div class="header-actions">
+        <a href="/api/export/json" class="btn btn-primary" download>
+          &#8681; Download JSON Backup
+        </a>
+        <label class="btn" style="cursor: pointer;">
+          &#8679; Import JSON File
+          <input type="file" id="inputImportJson" accept=".json,application/json" style="display: none;" />
+        </label>
+        <button type="button" id="btnResetBaseline" class="btn btn-danger">
+          &#8634; Reset to Original Shop Quote
+        </button>
+      </div>
+
+      <div>
+        <h3 class="kpi-label">Automatic Rolling Server Snapshots (Last 30 Saves on HEXnas)</h3>
+        <div id="backupsList" class="quotes-list"></div>
+      </div>
+    </div>
+  </dialog>
+
+  <script nonce="__CSP_NONCE__" src="/js/calc.js"></script>
+  <script nonce="__CSP_NONCE__" src="/js/app.js"></script>
+</body>
+</html>

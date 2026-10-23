@@ -1,0 +1,17 @@
+services:
+  price-compare:
+    build: .
+    container_name: price-compare
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:28085:28085"
+    environment:
+      - NODE_ENV=production
+      - PORT=28085
+      - DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
