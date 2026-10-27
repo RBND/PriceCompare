@@ -9,6 +9,11 @@ services:
       - NODE_ENV=production
       - PORT=28085
       - DATA_DIR=/app/data
+      - EBAY_CLIENT_ID=${EBAY_CLIENT_ID:-}
+      - EBAY_CLIENT_SECRET=${EBAY_CLIENT_SECRET:-}
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./data:/app/data
     security_opt:

@@ -2,6 +2,7 @@ node_modules/
 data/*.db*
 data/*.sqlite*
 data/backups/
+data/projects/
 data/state.json
 data/state.json.*
 .env

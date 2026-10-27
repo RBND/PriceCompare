@@ -14,7 +14,7 @@ COPY src ./src
 COPY public ./public
 
 # Create persistent data directory owned by non-root node user (uid 1000)
-RUN mkdir -p /app/data/backups && chown -R node:node /app/data
+RUN mkdir -p /app/data/projects /app/data/backups && chown -R node:node /app/data
 
 USER node
 

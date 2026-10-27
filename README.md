@@ -1,43 +1,71 @@
-# 2015 Chevrolet Corvette Stingray Z51 — Repair Quote & Used Parts PriceCompare
+# Car Parts & Bundle Price Optimizer
 
-A fast, self-hosted web application and live Excel (`.xlsx`) workbook generator built to compare the **DND Auto Body OEM Repair Estimate (#31065854)** against used/salvage replacement parts, bundled assemblies, and same-color painted panels.
+A clean, self-hosted web application and optimizer built to solve car parts shopping comparisons. When searching for multiple car parts, you can compare standalone part listings, multi-part bundle packages (e.g. Someone selling Part A + Part B + Part C together for one price), and dealer/shop baseline quotes.
+
+The software **automatically solves for the mathematically cheapest option**, telling you whether it's best to buy a bundle, buy items individually, or stick with the shop quote, with instant one-click **Open Listing ↗** buttons.
+
+---
 
 ## Key Features
 
-- **Pre-Loaded with Complete DND Auto Body Estimate (#31065854)**:
-  - All 38 estimate lines for **2015 Chevrolet Corvette Stingray Z51 2LT (`1G1YJ2D72F5108806`)**
-  - **Scope Toggles**: Instantly switch between:
-    1. All 15 "New" replaceable items (`$6,988.48` pre-tax / `$7,451.47` w/ 6.625% NJ tax)
-    2. 13 OEM Car Parts Only (excluding tires & mount/balance)
-    3. All 38 Estimate Lines (including existing panel repairs, blends, overhaul, alignment)
-  - Toggle Fixed Shop Labor (`$4,459.59`) & Paint Materials (`$552.32`) on or off to view either the full `$12,463.38` out-the-door comparison or a pure parts-only comparison.
-- **Proportional Bundle & Assembly Cost Allocation**:
-  - Group multiple parts bought together (e.g., *Right Rear Suspension Knee Assembly* — Lines 16, 17, 18, 19) under one combined price, shipping, and tax.
-  - Automatically calculates each part's exact percentage weight of the grouped OEM New price ($\text{Weight}_i = \frac{\text{OEM}_i}{\sum \text{OEM}}$) and divides the used bundle price, shipping, and tax proportionally across each member part.
-- **Multi-Quote Shopping Comparison**:
-  - Save multiple competing quotes per part or per bundle (eBay, Car-Part.com, Corvette Forum, salvage yards) and select one as **Active** to drive live totals.
-- **Same-Color Painted Panel Credit Preview**:
-  - Toggle *"Same Paint Color? (Skip Repaint)"* on painted body panels (`#6 R Quarter Outer Panel` and `#25 Rear Upr Bumper Cover`) to preview Refinish Labor & Paint Material savings.
-- **Order Workflow & Auto-Linked Carrier Tracking**:
-  - Track status from `Need to Find` → `Watching / Quoted` → `Ordered` → `Shipped` → `Delivered` → `At Body Shop`, with one-click UPS/FedEx/USPS tracking links.
-- **Multi-Tab Excel (`.xlsx`) Export with Live Formulas**:
-  - Generates a 4-tab `.xlsx` workbook compatible with Excel, LibreOffice Calc, and Google Sheets containing live `SUM`, `ROUND`, and proportional `%` formulas, plus a print-ready Body Shop Handover sheet.
-- **Security & Data Safety**:
-  - Atomic write-ahead file persistence (`temp` write + `fsync` + atomic `rename`) + automatic rolling snapshots (`data/backups/`, last 30 saves) + instant browser `localStorage` mirror.
-  - Per-request cryptographic CSP nonces, Fetch Metadata (`Sec-Fetch-*`) cross-site isolation, strict DOM creation (`textContent` / `createElement` only), and non-root Docker execution.
+1. **Automatic Cheapest-Option Combination Solver (Exact Set-Cover)**:
+   - Evaluates all available listings across single parts, multi-part bundles, and shop quotes.
+   - Automatically determines whether a bundle saves money compared to buying individual parts, with clear badges (e.g., `✓ Bundle Saves $60.08 vs. Individual`).
+   - Supports **Must Buy (Force into Cart)**, **Already Purchased**, and **Excluded** listing states.
 
-## Running Locally or with Docker Compose (HEXnas)
+2. **Clean 3-Tab Interface**:
+   - **Tab 1: Parts List**: Manage needed parts, interchange part numbers, and shop baseline quotes. One-click **Search eBay ↗** buttons generate multi-part-number searches. Supports CSV and JSON file import.
+   - **Tab 2: Listings & Bundles**: Fast listing entry with eBay URL/Item ID auto-pull. Check off 1 part for individual listings, or 2+ parts for a bundle.
+   - **Tab 3: Cheapest Results**: Live optimal shopping cart showing what to buy, seller, itemized price/shipping/tax breakdown, and total savings vs. shop baseline.
 
-### Local Node.js
+3. **Per-Listing & Per-Seller Combined Shipping**:
+   - Set shipping per item (Free, Flat Amount, or Unknown/Inquire).
+   - Configure **Per-Seller Combined Shipping Overrides** (e.g., $45 flat freight or free combined shipping for any order from Pacific Motors). The optimizer factors combined shipping into the solution.
+
+4. **eBay Integration**:
+   - **Zero-Key Best-Effort Auto-Pull**: Paste an eBay item ID (e.g. `296772916455`) or URL to automatically extract price, shipping, seller username, and title.
+   - **Official eBay Browse API Ready**: Set `EBAY_CLIENT_ID` and `EBAY_CLIENT_SECRET` environment variables to query the official eBay Browse API with ZIP code contextual location.
+   - **Refresh Prices**: One-click live refresh that re-checks prices and flags ended listings.
+
+5. **Multi-Tab Excel (`.xlsx`) Export**:
+   - Exports a 3-sheet workbook: **Cheapest Plan** (with live `SUM` formulas and purchase URLs), **Parts List**, and **All Listings**.
+
+6. **Multi-Project Management (SaaS-Ready)**:
+   - Run multiple car builds or repair comparisons simultaneously.
+   - Header project selector for instant switching with URL query sync (`/?project=<id>`).
+   - Create blank projects, duplicate existing builds, rename, and manage projects via the Project Manager.
+   - Fully isolated project storage in `data/projects/<id>.json` with RESTful stateless API endpoints under `/api/projects/:id`.
+
+7. **Data Safety & Security**:
+   - Atomic disk persistence with write-ahead sync and rolling automatic backups (last 30 saves) in `data/backups/`.
+   - Strict path traversal prevention on project identifiers (`/^[a-zA-Z0-9_-]{1,64}$/`).
+   - Hardened with cryptographic CSP nonces, Fetch Metadata (`Sec-Fetch-*`), and locked-down same-origin requests.
+
+---
+
+## Quick Start
+
+### Running Locally with Node.js
 ```bash
 npm install
 npm test
 npm start
-# Open http://localhost:28085
+# Open http://localhost:28085 in your browser
 ```
 
-### Docker Compose (HEXnas)
+### Running with Docker Compose (HEXnas / Remote Server)
 ```bash
 docker compose up -d --build
-# Open http://10.10.10.1:28085
+# Open http://<server-ip>:28085
+```
+
+---
+
+## CSV Import Format Example
+Upload or paste CSV with standard headers (quoted commas in part numbers are supported):
+```csv
+Part Name,Part Numbers,Shop Price,Taxable,Notes
+"Right rear lower control arm","20965286",887.11,Yes,"Cast aluminum"
+"Right rear upper control arm","84463637, 23240821",204.93,Yes,"Upper wishbone"
+"Rear toe link / adjuster link","23175952, 20965287",156.06,Yes,"Toe adjuster"
 ```
