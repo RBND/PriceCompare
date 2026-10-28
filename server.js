@@ -116,11 +116,11 @@ app.get(['/', '/index.html'], (req, res) => {
   res.send(html);
 });
 
-// Static files (CSS, JS)
+// Static files (CSS, JS) - Zero-cache for immediate instant updates
 app.use(
   express.static(path.join(__dirname, 'public'), {
     index: false,
-    maxAge: '1h'
+    maxAge: 0
   })
 );
 

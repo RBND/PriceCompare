@@ -3,8 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
   <title>Car Parts &amp; Bundle Price Optimizer</title>
-  <link rel="stylesheet" href="/css/styles.css" />
+  <script nonce="__CSP_NONCE__">
+    (function () {
+      try {
+        const stored = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const theme = stored ? stored : (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/css/styles.css?v=2.2.0" />
 </head>
 <body>
   <!-- Header / App Bar -->
@@ -13,15 +24,14 @@
       <div class="brand-group">
         <div class="brand-badge-row">
           <span class="badge badge-primary">Price Optimizer</span>
-          <span class="badge badge-dark">Clean-Room v2</span>
         </div>
         <div class="project-selector-bar">
           <div class="project-select-wrap">
             <select id="projectSelect" class="project-select" aria-label="Active Project">
-              <!-- Dynamically populated -->
+              <option value="corvette-z51">2015 Corvette Z51 — Right Rear Repair</option>
             </select>
           </div>
-          <button type="button" class="btn btn-sm btn-outline-primary" id="btnHeaderNewProject" title="Create New Project">
+          <button type="button" class="btn btn-sm btn-primary" id="btnHeaderNewProject" title="Create New Project">
             + New
           </button>
           <button type="button" class="btn btn-sm btn-secondary" id="btnHeaderManageProjects" title="Manage Projects">
@@ -63,6 +73,10 @@
 
       <div class="header-actions">
         <span id="syncIndicator" class="sync-indicator" role="status" aria-live="polite">● Saved</span>
+        <button type="button" class="btn btn-secondary theme-toggle-btn" id="btnThemeToggle" title="Toggle theme (Light / Dark)" aria-label="Toggle theme">
+          <span class="theme-icon-light" aria-hidden="true">☀️</span>
+          <span class="theme-icon-dark" aria-hidden="true">🌙</span>
+        </button>
         <div class="dropdown">
           <button type="button" class="btn btn-secondary dropdown-toggle" id="btnExportMenu" aria-haspopup="true" aria-expanded="false">
             Export / Data ▾
@@ -798,7 +812,7 @@
   </dialog>
 
   <!-- Application Scripts -->
-  <script nonce="__CSP_NONCE__" src="/js/calc.js"></script>
-  <script nonce="__CSP_NONCE__" src="/js/app.js"></script>
+  <script nonce="__CSP_NONCE__" src="/js/calc.js?v=2.2.0"></script>
+  <script nonce="__CSP_NONCE__" src="/js/app.js?v=2.2.0"></script>
 </body>
 </html>

@@ -4,9 +4,11 @@
    ========================================================================== */
 
 :root {
+  color-scheme: light dark;
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
+  /* Light Theme (Default) */
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
   --color-surface-hover: #f1f5f9;
@@ -46,6 +48,84 @@
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+
+/* System Dark Theme (defaulting when no manual light override) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #090d16;
+    --color-surface: #111827;
+    --color-surface-hover: #1f2937;
+    --color-border: #1e293b;
+    --color-border-dark: #374151;
+
+    --color-text-main: #f8fafc;
+    --color-text-muted: #94a3b8;
+    --color-text-subtle: #64748b;
+
+    --color-primary: #3b82f6;
+    --color-primary-hover: #60a5fa;
+    --color-primary-bg: rgba(59, 130, 246, 0.18);
+    --color-primary-border: rgba(59, 130, 246, 0.38);
+
+    --color-success: #22c55e;
+    --color-success-bg: rgba(34, 197, 94, 0.18);
+    --color-success-border: rgba(34, 197, 94, 0.38);
+
+    --color-warning: #f59e0b;
+    --color-warning-bg: rgba(245, 158, 11, 0.18);
+    --color-warning-border: rgba(245, 158, 11, 0.38);
+
+    --color-danger: #ef4444;
+    --color-danger-bg: rgba(239, 68, 68, 0.18);
+    --color-danger-border: rgba(239, 68, 68, 0.38);
+
+    --color-indigo: #6366f1;
+    --color-indigo-hover: #818cf8;
+    --color-indigo-bg: rgba(99, 102, 241, 0.18);
+
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.45), 0 2px 4px -2px rgb(0 0 0 / 0.45);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.6), 0 4px 6px -4px rgb(0 0 0 / 0.6);
+  }
+}
+
+/* Explicit Dark Theme Override */
+:root[data-theme="dark"] {
+  --color-bg: #090d16;
+  --color-surface: #111827;
+  --color-surface-hover: #1f2937;
+  --color-border: #1e293b;
+  --color-border-dark: #374151;
+
+  --color-text-main: #f8fafc;
+  --color-text-muted: #94a3b8;
+  --color-text-subtle: #64748b;
+
+  --color-primary: #3b82f6;
+  --color-primary-hover: #60a5fa;
+  --color-primary-bg: rgba(59, 130, 246, 0.18);
+  --color-primary-border: rgba(59, 130, 246, 0.38);
+
+  --color-success: #22c55e;
+  --color-success-bg: rgba(34, 197, 94, 0.18);
+  --color-success-border: rgba(34, 197, 94, 0.38);
+
+  --color-warning: #f59e0b;
+  --color-warning-bg: rgba(245, 158, 11, 0.18);
+  --color-warning-border: rgba(245, 158, 11, 0.38);
+
+  --color-danger: #ef4444;
+  --color-danger-bg: rgba(239, 68, 68, 0.18);
+  --color-danger-border: rgba(239, 68, 68, 0.38);
+
+  --color-indigo: #6366f1;
+  --color-indigo-hover: #818cf8;
+  --color-indigo-bg: rgba(99, 102, 241, 0.18);
+
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.45), 0 2px 4px -2px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.6), 0 4px 6px -4px rgb(0 0 0 / 0.6);
 }
 
 *, *::before, *::after {
@@ -155,10 +235,10 @@ body {
 }
 
 .project-select {
-  height: 2.2rem;
-  max-width: 380px;
-  min-width: 220px;
-  padding: 0 2rem 0 0.75rem;
+  height: 2.25rem;
+  max-width: 440px;
+  min-width: 240px;
+  padding: 0 2.2rem 0 0.85rem;
   font-family: inherit;
   font-size: 0.95rem;
   font-weight: 700;
@@ -170,12 +250,22 @@ body {
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23475569' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 0.6rem center;
+  background-position: right 0.75rem center;
   background-size: 0.9rem;
   text-overflow: ellipsis;
   white-space: nowrap;
   overflow: hidden;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+[data-theme="dark"] .project-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) .project-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+  }
 }
 
 .project-select:hover {
@@ -186,6 +276,51 @@ body {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
   outline: none;
+}
+
+/* Theme Toggle Button in Header */
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border-radius: var(--radius-md);
+  font-size: 1.05rem;
+  cursor: pointer;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-main);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.theme-toggle-btn:hover {
+  background-color: var(--color-surface-hover);
+  border-color: var(--color-border-dark);
+}
+
+[data-theme="dark"] .theme-icon-light {
+  display: inline-block;
+}
+[data-theme="dark"] .theme-icon-dark {
+  display: none;
+}
+
+:root:not([data-theme="dark"]) .theme-icon-light {
+  display: none;
+}
+:root:not([data-theme="dark"]) .theme-icon-dark {
+  display: inline-block;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) .theme-icon-light {
+    display: inline-block;
+  }
+  :root:not([data-theme="light"]):not([data-theme="dark"]) .theme-icon-dark {
+    display: none;
+  }
 }
 
 /* Header Settings */
@@ -211,19 +346,29 @@ body {
 }
 
 .input-setting {
-  height: 2rem;
-  padding: 0 1.5rem 0 0.5rem;
-  font-size: 0.875rem;
+  height: 2.15rem;
+  padding: 0 1.6rem 0 0.65rem;
+  font-size: 0.9rem;
   font-weight: 600;
   color: var(--color-text-main);
-  border: 1px solid var(--color-border);
+  border: 1.5px solid var(--color-border);
   border-radius: var(--radius-sm);
-  background: var(--color-bg);
-  width: 5rem;
+  background: var(--color-surface);
+  width: 6.75rem;
+}
+
+.input-setting::-webkit-outer-spin-button,
+.input-setting::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.input-setting[type=number] {
+  -moz-appearance: textfield;
 }
 
 .zip-input {
-  width: 5rem;
+  width: 5.5rem;
   padding-right: 0.5rem;
 }
 

@@ -2174,8 +2174,17 @@
   }
 
   function setupProjectManager() {
+    const projectSelect = els.projectSelect || document.getElementById('projectSelect');
+    const btnNew = els.btnHeaderNewProject || document.getElementById('btnHeaderNewProject');
+    const btnManage = els.btnHeaderManageProjects || document.getElementById('btnHeaderManageProjects');
+    const btnModalNew = els.btnModalNewProject || document.getElementById('btnModalNewProject');
+    const dialogNew = els.dialogNewProject || document.getElementById('dialogNewProject');
+    const dialogManage = els.dialogManageProjects || document.getElementById('dialogManageProjects');
+    const formNew = els.formNewProject || document.getElementById('formNewProject');
+    const inputName = els.inputNewProjectName || document.getElementById('inputNewProjectName');
+
     // Dropdown change
-    els.projectSelect?.addEventListener('change', async (e) => {
+    projectSelect?.addEventListener('change', async (e) => {
       const selectedId = e.target.value;
       if (selectedId && selectedId !== activeProjectId) {
         setActiveProjectId(selectedId, true);
@@ -2184,31 +2193,39 @@
     });
 
     // Header "+ New"
-    els.btnHeaderNewProject?.addEventListener('click', () => {
-      if (els.inputNewProjectName) els.inputNewProjectName.value = '';
-      els.dialogNewProject?.showModal();
+    btnNew?.addEventListener('click', () => {
+      if (inputName) inputName.value = '';
+      if (dialogNew && typeof dialogNew.showModal === 'function') {
+        dialogNew.showModal();
+      }
     });
 
     // Modal "+ Create New Project"
-    els.btnModalNewProject?.addEventListener('click', () => {
-      els.dialogManageProjects?.close();
-      if (els.inputNewProjectName) els.inputNewProjectName.value = '';
-      els.dialogNewProject?.showModal();
+    btnModalNew?.addEventListener('click', () => {
+      if (dialogManage && typeof dialogManage.close === 'function') {
+        dialogManage.close();
+      }
+      if (inputName) inputName.value = '';
+      if (dialogNew && typeof dialogNew.showModal === 'function') {
+        dialogNew.showModal();
+      }
     });
 
     // Header "⚙" Manage Projects
-    els.btnHeaderManageProjects?.addEventListener('click', () => {
+    btnManage?.addEventListener('click', () => {
       renderManageProjectsList();
-      els.dialogManageProjects?.showModal();
+      if (dialogManage && typeof dialogManage.showModal === 'function') {
+        dialogManage.showModal();
+      }
     });
 
     // Form submit: Create New Project
-    els.formNewProject?.addEventListener('submit', async (e) => {
+    formNew?.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const name = String(els.inputNewProjectName?.value || '').trim();
+      const name = String(inputName?.value || '').trim();
       if (!name) return;
 
-      const template = els.formNewProject.querySelector('input[name="newProjectTemplate"]:checked')?.value || 'blank';
+      const template = formNew.querySelector('input[name="newProjectTemplate"]:checked')?.value || 'blank';
 
       try {
         const res = await fetch('/api/projects', {
@@ -2218,7 +2235,9 @@
         });
         const data = await res.json();
         if (data.ok && data.id) {
-          els.dialogNewProject?.close();
+          if (dialogNew && typeof dialogNew.close === 'function') {
+            dialogNew.close();
+          }
           await loadProjectsList(data.id);
         } else {
           alert('Failed to create project: ' + (data.error || 'Unknown error'));
@@ -2229,7 +2248,7 @@
     });
 
     // Handle browser back/forward buttons
-    window.addEventListener('popstate', async (e) => {
+    window.addEventListener('popstate', async () => {
       const targetId = getActiveProjectIdFromUrl();
       if (targetId && targetId !== activeProjectId) {
         setActiveProjectId(targetId, false);
@@ -2239,11 +2258,39 @@
     });
   }
 
+  // --- Theme Toggle (modern-web-guidance) ---
+  function setupThemeToggle() {
+    const btn = document.getElementById('btnThemeToggle');
+    if (!btn) return;
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      btn.setAttribute('title', `Current: ${theme === 'dark' ? 'Dark' : 'Light'} Mode (Click to toggle)`);
+    }
+
+    btn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      const next = current === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('theme', next);
+      applyTheme(next);
+    });
+
+    try {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        if (!localStorage.getItem('theme')) {
+          applyTheme(e.matches ? 'dark' : 'light');
+        }
+      });
+    } catch (e) {}
+  }
+
   // --- Initialize App ---
   function init() {
     setupTabs();
     setupForms();
     setupProjectManager();
+    setupThemeToggle();
     setupAriaValidationSync();
     loadProjectsList();
   }
