@@ -25,6 +25,8 @@ import {
   ProjectPayloadSchema,
   GuestMigrationPayloadSchema,
   type AccountSecurityState,
+  type UserPublic,
+  type AdminUserPublic,
 } from '../shared/types.js';
 import {
   hashPassword,
@@ -143,10 +145,13 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const now = Date.now();
     const finalName = display_name || normalizedEmail.split('@')[0];
 
+    const adminEmails = ['mykehype@gmail.com', 'admin@priceit.rbnd.cc', process.env.ADMIN_EMAIL?.toLowerCase()].filter(Boolean);
+    const isAdmin = adminEmails.includes(normalizedEmail) ? 1 : 0;
+
     db.prepare(
-      `INSERT INTO users (id, email, password_hash, email_verified, display_name, created_at, updated_at)
-       VALUES (?, ?, ?, 0, ?, ?, ?)`
-    ).run(userId, normalizedEmail, passwordHash, finalName, now, now);
+      `INSERT INTO users (id, email, password_hash, email_verified, display_name, is_admin, created_at, updated_at)
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?)`
+    ).run(userId, normalizedEmail, passwordHash, finalName, isAdmin, now, now);
 
     const migratedProjectId = migrateGuestProjectIfDirty(db, userId, guest_migration);
 
@@ -158,6 +163,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
         email: normalizedEmail,
         display_name: finalName,
         email_verified: false,
+        is_admin: Boolean(isAdmin),
       },
       migrated_project_id: migratedProjectId,
     });
@@ -189,7 +195,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
     const userRow = db
       .prepare(
-        `SELECT id, email, password_hash, email_verified, display_name
+        `SELECT id, email, password_hash, email_verified, display_name, is_banned, ban_reason
          FROM users WHERE email = ?`
       )
       .get(normalizedEmail) as
@@ -199,11 +205,21 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
           password_hash: string | null;
           email_verified: number;
           display_name: string | null;
+          is_banned?: number;
+          ban_reason?: string | null;
         }
       | undefined;
 
     if (!userRow || !userRow.password_hash) {
       res.status(401).json({ error: 'Invalid email or password' });
+      return;
+    }
+
+    if (userRow.is_banned === 1) {
+      res.status(403).json({
+        error: 'This account has been suspended by an administrator.',
+        reason: userRow.ban_reason || null,
+      });
       return;
     }
 
@@ -256,6 +272,9 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     let finalEmail = normalizedEmail;
     let finalDisplayName: string;
 
+    let isBanned = false;
+    let banReason: string | null = null;
+
     const tx = db.transaction(() => {
       const existingOAuth = db
         .prepare(
@@ -266,14 +285,19 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       if (existingOAuth) {
         userId = existingOAuth.user_id;
         const u = db
-          .prepare(`SELECT display_name, email FROM users WHERE id = ?`)
-          .get(userId) as { display_name: string | null; email: string };
+          .prepare(`SELECT display_name, email, is_banned, ban_reason FROM users WHERE id = ?`)
+          .get(userId) as { display_name: string | null; email: string; is_banned?: number; ban_reason?: string | null };
+        if (u.is_banned === 1) {
+          isBanned = true;
+          banReason = u.ban_reason || null;
+          return;
+        }
         finalEmail = u.email;
         finalDisplayName = u.display_name || u.email.split('@')[0];
       } else {
         const existingUser = db
           .prepare(
-            `SELECT id, email, password_hash, email_verified, display_name
+            `SELECT id, email, password_hash, email_verified, display_name, is_banned, ban_reason
              FROM users WHERE email = ?`
           )
           .get(normalizedEmail) as
@@ -283,10 +307,17 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
               password_hash: string | null;
               email_verified: number;
               display_name: string | null;
+              is_banned?: number;
+              ban_reason?: string | null;
             }
           | undefined;
 
         if (existingUser) {
+          if (existingUser.is_banned === 1) {
+            isBanned = true;
+            banReason = existingUser.ban_reason || null;
+            return;
+          }
           userId = existingUser.id;
           finalEmail = existingUser.email;
           finalDisplayName = existingUser.display_name || display_name || normalizedEmail.split('@')[0];
@@ -322,6 +353,14 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     });
 
     tx();
+
+    if (isBanned) {
+      res.status(403).json({
+        error: 'This account has been suspended by an administrator.',
+        reason: banReason,
+      });
+      return;
+    }
 
     const migratedProjectId = migrateGuestProjectIfDirty(db, userId!, guest_migration);
     createSessionForUser(userId!, res, req);
@@ -898,7 +937,8 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       return;
     }
 
-    const { challengeId, response: credResponse, custom_name, mock_passkey } = req.body;
+    const { challengeId, custom_name, mock_passkey } = req.body;
+    const credResponse = (req.body.response?.clientDataJSON ? req.body : req.body.response) || req.body;
     const now = Date.now();
     const currentSessionHash = getCurrentSessionHash(req);
 
@@ -927,16 +967,28 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       return;
     }
 
-    const challengeRow = db
-      .prepare(`SELECT challenge, expected_uv, expires_at FROM webauthn_challenges WHERE id = ? AND user_id = ? AND purpose = 'register'`)
-      .get(challengeId, user.id) as { challenge: string; expected_uv: string; expires_at: number } | undefined;
+    let challengeRow = challengeId
+      ? (db
+          .prepare(
+            `SELECT id, challenge, expected_uv, expires_at FROM webauthn_challenges WHERE id = ? AND user_id = ? AND purpose = 'register'`
+          )
+          .get(challengeId, user.id) as { id: string; challenge: string; expected_uv: string; expires_at: number } | undefined)
+      : undefined;
+
+    if (!challengeRow) {
+      challengeRow = db
+        .prepare(
+          `SELECT id, challenge, expected_uv, expires_at FROM webauthn_challenges WHERE user_id = ? AND purpose = 'register' AND expires_at > ? ORDER BY created_at DESC LIMIT 1`
+        )
+        .get(user.id, now) as { id: string; challenge: string; expected_uv: string; expires_at: number } | undefined;
+    }
 
     if (!challengeRow || challengeRow.expires_at <= now) {
       res.status(400).json({ error: 'WebAuthn challenge expired or invalid.' });
       return;
     }
 
-    db.prepare(`DELETE FROM webauthn_challenges WHERE id = ?`).run(challengeId);
+    db.prepare(`DELETE FROM webauthn_challenges WHERE id = ?`).run(challengeRow.id);
 
     const { rpID, origin } = getRpConfig(req);
     let verification;
@@ -1021,7 +1073,8 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
   // POST /api/auth/passkeys/login/verify
   app.post('/api/auth/passkeys/login/verify', async (req, res) => {
-    const { challengeId, response: credResponse } = req.body;
+    const { challengeId } = req.body;
+    const credResponse = (req.body.response?.clientDataJSON ? req.body : req.body.response) || req.body;
     const now = Date.now();
 
     const passkeyRow = db
@@ -1034,16 +1087,34 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       return;
     }
 
-    const challengeRow = db
-      .prepare(`SELECT challenge, expected_uv, expires_at FROM webauthn_challenges WHERE id = ? AND purpose = 'login'`)
-      .get(challengeId) as { challenge: string; expected_uv: string; expires_at: number } | undefined;
+    const userAccount = db.prepare(`SELECT is_banned FROM users WHERE id = ?`).get(passkeyRow.user_id) as any;
+    if (userAccount && userAccount.is_banned === 1) {
+      res.status(403).json({ error: 'This account has been suspended by an administrator.' });
+      return;
+    }
+
+    let challengeRow = challengeId
+      ? (db
+          .prepare(
+            `SELECT id, challenge, expected_uv, expires_at FROM webauthn_challenges WHERE id = ? AND purpose = 'login'`
+          )
+          .get(challengeId) as { id: string; challenge: string; expected_uv: string; expires_at: number } | undefined)
+      : undefined;
+
+    if (!challengeRow) {
+      challengeRow = db
+        .prepare(
+          `SELECT id, challenge, expected_uv, expires_at FROM webauthn_challenges WHERE purpose = 'login' AND expires_at > ? ORDER BY created_at DESC LIMIT 1`
+        )
+        .get(now) as { id: string; challenge: string; expected_uv: string; expires_at: number } | undefined;
+    }
 
     if (!challengeRow || challengeRow.expires_at <= now) {
       res.status(400).json({ error: 'WebAuthn login challenge expired or invalid.' });
       return;
     }
 
-    db.prepare(`DELETE FROM webauthn_challenges WHERE id = ?`).run(challengeId);
+    db.prepare(`DELETE FROM webauthn_challenges WHERE id = ?`).run(challengeRow.id);
 
     const { rpID, origin } = getRpConfig(req);
     let verification;
@@ -1407,6 +1478,209 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       rpId: rpID,
       userIdBase64Url,
     });
+  });
+
+  // Admin Verification Middleware Helper
+  function requireAdmin(req: express.Request, res: express.Response): UserPublic | null {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return null;
+    }
+    if (!user.is_admin) {
+      res.status(403).json({ error: 'Administrator privileges required.' });
+      return null;
+    }
+    return user;
+  }
+
+  // GET /api/admin/users (List all registered accounts with moderation metadata)
+  app.get('/api/admin/users', (req, res) => {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+
+    const rows = db.prepare(`
+      SELECT u.id, u.email, u.display_name, u.email_verified, u.is_admin, u.is_banned, u.ban_reason,
+             u.password_reset_required, u.is_passwordless, u.created_at,
+             (SELECT MAX(last_active_at) FROM sessions WHERE user_id = u.id) as last_active_at,
+             (SELECT COUNT(*) FROM sessions WHERE user_id = u.id) as active_sessions_count,
+             (SELECT COUNT(*) FROM projects WHERE user_id = u.id) as projects_count
+      FROM users u
+      ORDER BY u.created_at DESC
+    `).all() as any[];
+
+    const users: AdminUserPublic[] = rows.map((r) => ({
+      id: r.id,
+      email: r.email,
+      display_name: r.display_name || r.email.split('@')[0],
+      email_verified: Boolean(r.email_verified),
+      is_admin: Boolean(r.is_admin),
+      is_banned: Boolean(r.is_banned),
+      ban_reason: r.ban_reason || null,
+      password_reset_required: Boolean(r.password_reset_required),
+      is_passwordless: Boolean(r.is_passwordless),
+      created_at: r.created_at,
+      last_active_at: r.last_active_at || null,
+      active_sessions_count: r.active_sessions_count || 0,
+      projects_count: r.projects_count || 0,
+    }));
+
+    res.json({ users });
+  });
+
+  // POST /api/admin/users/:id/ban (Ban or unban user, immediately purges sessions if banned)
+  app.post('/api/admin/users/:id/ban', (req, res) => {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+
+    const targetId = req.params.id;
+    if (targetId === admin.id) {
+      res.status(400).json({ error: 'Cannot ban your own administrator account.' });
+      return;
+    }
+
+    const { banned, reason } = req.body;
+    const isBanned = Boolean(banned);
+    const banReason = isBanned ? String(reason || 'Suspended by administrator').slice(0, 500) : null;
+
+    db.transaction(() => {
+      db.prepare(`UPDATE users SET is_banned = ?, ban_reason = ? WHERE id = ?`).run(
+        isBanned ? 1 : 0,
+        banReason,
+        targetId
+      );
+      if (isBanned) {
+        db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(targetId);
+      }
+    })();
+
+    res.json({ ok: true, is_banned: isBanned });
+  });
+
+  // POST /api/admin/users/:id/reset-password (Lock account, purge sessions, issue reset token)
+  app.post('/api/admin/users/:id/reset-password', async (req, res) => {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+
+    const targetId = req.params.id;
+    const targetUser = db.prepare(`SELECT id, email, display_name FROM users WHERE id = ?`).get(targetId) as any;
+    if (!targetUser) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('base64url');
+    const tokenHash = hashSessionToken(resetToken);
+    const now = Date.now();
+
+    db.transaction(() => {
+      db.prepare(`UPDATE users SET password_reset_required = 1 WHERE id = ?`).run(targetId);
+      db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(targetId);
+      db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(targetId);
+      db.prepare(
+        `INSERT INTO email_verifications (token_hash, user_id, new_email, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(tokenHash, targetId, targetUser.email, now + 60 * 60 * 1000, now);
+    })();
+
+    await sendVerificationEmail(targetUser.email, resetToken);
+
+    res.json({
+      ok: true,
+      locked: true,
+      reset_token: process.env.NODE_ENV !== 'production' ? resetToken : undefined,
+    });
+  });
+
+  // POST /api/admin/users/:id/promote (Toggle administrator rights)
+  app.post('/api/admin/users/:id/promote', (req, res) => {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+
+    const targetId = req.params.id;
+    if (targetId === admin.id) {
+      res.status(400).json({ error: 'Cannot modify your own administrative rank.' });
+      return;
+    }
+
+    const { is_admin } = req.body;
+    db.prepare(`UPDATE users SET is_admin = ? WHERE id = ?`).run(is_admin ? 1 : 0, targetId);
+    res.json({ ok: true, is_admin: Boolean(is_admin) });
+  });
+
+  // DELETE /api/admin/users/:id (Permanently delete user and cascade projects)
+  app.delete('/api/admin/users/:id', (req, res) => {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+
+    const targetId = req.params.id;
+    if (targetId === admin.id) {
+      res.status(400).json({ error: 'Cannot delete your own administrator account.' });
+      return;
+    }
+
+    db.prepare(`DELETE FROM users WHERE id = ?`).run(targetId);
+    res.json({ ok: true });
+  });
+
+  // GET /api/admin/oauth (Fetch current OAuth credentials configuration)
+  app.get('/api/admin/oauth', (req, res) => {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+
+    const settings = db.prepare(`SELECT key, value FROM system_settings WHERE key LIKE 'oauth_%'`).all() as Array<{ key: string; value: string }>;
+    const settingsMap = new Map(settings.map((s) => [s.key, s.value]));
+
+    const providers = ['google', 'microsoft', 'facebook', 'github', 'reddit'];
+    const configs = providers.map((prov) => {
+      const clientId = settingsMap.get(`oauth_${prov}_client_id`) || process.env[`${prov.toUpperCase()}_CLIENT_ID`] || '';
+      const secret = settingsMap.get(`oauth_${prov}_client_secret`) || process.env[`${prov.toUpperCase()}_CLIENT_SECRET`] || '';
+      const enabled = settingsMap.get(`oauth_${prov}_enabled`) !== 'false';
+      return {
+        provider: prov,
+        client_id: clientId,
+        is_secret_set: Boolean(secret),
+        enabled,
+      };
+    });
+
+    res.json({ configs });
+  });
+
+  // PUT /api/admin/oauth (Save OAuth credentials configuration)
+  app.put('/api/admin/oauth', (req, res) => {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+
+    const { provider, client_id, client_secret, enabled } = req.body;
+    if (!provider) {
+      res.status(400).json({ error: 'Provider is required.' });
+      return;
+    }
+
+    const now = Date.now();
+    db.transaction(() => {
+      if (typeof client_id === 'string') {
+        db.prepare(
+          `INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+        ).run(`oauth_${provider}_client_id`, client_id.trim(), now);
+      }
+      if (client_secret && typeof client_secret === 'string' && client_secret.trim()) {
+        db.prepare(
+          `INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+        ).run(`oauth_${provider}_client_secret`, client_secret.trim(), now);
+      }
+      if (typeof enabled === 'boolean') {
+        db.prepare(
+          `INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+        ).run(`oauth_${provider}_enabled`, String(enabled), now);
+      }
+    })();
+
+    res.json({ ok: true });
   });
 
   // POST /api/projects/migrate-guest

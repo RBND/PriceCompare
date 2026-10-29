@@ -256,4 +256,35 @@ export interface UserPublic {
   email_verified: boolean;
   has_password?: boolean;
   is_passwordless?: boolean;
+  is_admin?: boolean;
+  is_banned?: boolean;
+  password_reset_required?: boolean;
 }
+
+export interface AdminUserPublic {
+  id: string;
+  email: string;
+  display_name: string;
+  email_verified: boolean;
+  is_admin: boolean;
+  is_banned: boolean;
+  ban_reason: string | null;
+  password_reset_required: boolean;
+  is_passwordless: boolean;
+  created_at: number;
+  last_active_at: number | null;
+  active_sessions_count: number;
+  projects_count: number;
+}
+
+export const UpdateOAuthConfigSchema = z.object({
+  provider: OAuthProviderSchema,
+  client_id: z.string().trim().max(500),
+  client_secret: z.string().trim().max(500).optional(),
+  enabled: z.boolean().default(true),
+});
+
+export const BanUserSchema = z.object({
+  banned: z.boolean(),
+  reason: z.string().trim().max(500).optional(),
+});

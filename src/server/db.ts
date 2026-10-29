@@ -162,6 +162,12 @@ export function initDatabase(dbPath?: string): Database.Database {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
     CREATE INDEX IF NOT EXISTS idx_parts_project_id ON parts(project_id);
     CREATE INDEX IF NOT EXISTS idx_offerings_project_id ON offerings(project_id);
@@ -181,11 +187,23 @@ export function initDatabase(dbPath?: string): Database.Database {
   }
 
   ensureColumn('users', 'is_passwordless', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('users', 'is_banned', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('users', 'ban_reason', 'TEXT');
+  ensureColumn('users', 'password_reset_required', 'INTEGER NOT NULL DEFAULT 0');
+
   ensureColumn('sessions', 'session_uid', 'TEXT');
   ensureColumn('sessions', 'ip_address', "TEXT DEFAULT ''");
   ensureColumn('sessions', 'user_agent', "TEXT DEFAULT ''");
   ensureColumn('sessions', 'last_active_at', 'INTEGER');
   ensureColumn('sessions', 'reauthenticated_at', 'INTEGER');
+
+  // Auto-promote primary admin (e.g. Myke or first registered user)
+  db.exec(`
+    UPDATE users SET is_admin = 1 
+    WHERE email IN ('mykehype@gmail.com', 'admin@priceit.rbnd.cc') 
+       OR id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1);
+  `);
 
   // Backfill session_uid and last_active_at for any pre-existing sessions
   db.exec(`

@@ -243,6 +243,7 @@ export function getAuthenticatedUser(db: Database.Database, req: Request): UserP
   const row = db
     .prepare(
       `SELECT u.id, u.email, u.display_name, u.email_verified, u.password_hash, u.is_passwordless,
+              u.is_admin, u.is_banned, u.password_reset_required,
               s.expires_at, s.last_active_at, s.reauthenticated_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
@@ -256,6 +257,9 @@ export function getAuthenticatedUser(db: Database.Database, req: Request): UserP
         email_verified: number;
         password_hash: string | null;
         is_passwordless: number;
+        is_admin?: number;
+        is_banned?: number;
+        password_reset_required?: number;
         expires_at: number;
         last_active_at: number | null;
         reauthenticated_at: number | null;
@@ -263,6 +267,13 @@ export function getAuthenticatedUser(db: Database.Database, req: Request): UserP
     | undefined;
 
   if (!row) return null;
+
+  // Immediately revoke sessions of banned accounts
+  if (row.is_banned === 1) {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.id);
+    return null;
+  }
+
   if (row.expires_at <= now) {
     db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionHash);
     return null;
@@ -282,5 +293,8 @@ export function getAuthenticatedUser(db: Database.Database, req: Request): UserP
     email_verified: Boolean(row.email_verified),
     has_password: row.password_hash !== null,
     is_passwordless: Boolean(row.is_passwordless || row.password_hash === null),
+    is_admin: Boolean(row.is_admin),
+    is_banned: Boolean(row.is_banned),
+    password_reset_required: Boolean(row.password_reset_required),
   };
 }

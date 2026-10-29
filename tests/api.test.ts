@@ -517,5 +517,101 @@ describe('Security Controls, Auth, OAuth Linking Safety, Idempotent Guest Migrat
         .set('Cookie', sessionCookie2);
       expect(afterDeleteMe.body.user).toBeNull();
     });
+
+    it('verifies passkey registration options structure and enforces admin moderation controls', async () => {
+      // 1. Create an admin user and a standard user
+      const adminRegister = await request(app)
+        .post('/api/auth/register')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'mykehype@gmail.com',
+          password: 'AdminPassword123!',
+          display_name: 'Myke (Admin)',
+        });
+      const adminCookie = adminRegister.headers['set-cookie'][0];
+
+      const userRegister = await request(app)
+        .post('/api/auth/register')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'spammer@workshop.org',
+          password: 'UserPassword123!',
+          display_name: 'Spam User',
+        });
+      const userCookie = userRegister.headers['set-cookie'][0];
+      const spammerUserId = userRegister.body.user.id;
+
+      // 2. Check passkey options endpoint contains challenge and valid options object
+      const passkeyOptionsRes = await request(app)
+        .post('/api/auth/passkeys/register/options')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', adminCookie)
+        .send({});
+      expect(passkeyOptionsRes.status).toBe(200);
+      expect(passkeyOptionsRes.body.options).toBeDefined();
+      expect(passkeyOptionsRes.body.options.challenge).toBeDefined();
+      expect(passkeyOptionsRes.body.challengeId).toBeDefined();
+
+      // 3. Standard user is blocked from /api/admin/* (403 Forbidden)
+      const nonAdminRes = await request(app)
+        .get('/api/admin/users')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', userCookie);
+      expect(nonAdminRes.status).toBe(403);
+
+      // 4. Admin accesses /api/admin/users (200 OK)
+      const adminUsersRes = await request(app)
+        .get('/api/admin/users')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', adminCookie);
+      expect(adminUsersRes.status).toBe(200);
+      expect(Array.isArray(adminUsersRes.body.users)).toBe(true);
+
+      // 5. Admin bans the user -> user's active session is terminated
+      const banRes = await request(app)
+        .post(`/api/admin/users/${spammerUserId}/ban`)
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', adminCookie)
+        .send({ banned: true, reason: 'Violating community guidelines' });
+      expect(banRes.status).toBe(200);
+      expect(banRes.body.is_banned).toBe(true);
+
+      // Banned user's session is now rejected
+      const bannedSessionCheck = await request(app)
+        .get('/api/auth/account')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', userCookie);
+      expect(bannedSessionCheck.status).toBe(401);
+
+      // Subsequent login attempt by banned user is rejected with 403 Forbidden
+      const bannedLoginCheck = await request(app)
+        .post('/api/auth/login')
+        .set('X-PriceIt-CSRF', '1')
+        .send({ email: 'spammer@workshop.org', password: 'UserPassword123!' });
+      expect(bannedLoginCheck.status).toBe(403);
+      expect(bannedLoginCheck.body.error).toContain('suspended');
+
+      // 6. Admin can configure OAuth applications
+      const putOAuthRes = await request(app)
+        .put('/api/admin/oauth')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', adminCookie)
+        .send({
+          provider: 'google',
+          client_id: 'google-client-id-12345.apps.googleusercontent.com',
+          client_secret: 'google-super-secret-key',
+          enabled: true,
+        });
+      expect(putOAuthRes.status).toBe(200);
+
+      const getOAuthRes = await request(app)
+        .get('/api/admin/oauth')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', adminCookie);
+      expect(getOAuthRes.status).toBe(200);
+      const googleConfig = getOAuthRes.body.configs.find((c: any) => c.provider === 'google');
+      expect(googleConfig.client_id).toBe('google-client-id-12345.apps.googleusercontent.com');
+      expect(googleConfig.is_secret_set).toBe(true);
+    });
   });
 });
