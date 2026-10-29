@@ -1918,7 +1918,7 @@ export function App() {
             </div>
 
             <div className="text-[11px] font-mono-tabular" style={{ color: 'var(--text-secondary)' }}>
-              <strong>Domain:</strong> priceit.rbnd.cc &bull; <strong>Effective:</strong> October 29, 2026 &bull; <strong>Developer:</strong> myke.endrodi@gmail.com
+              <strong>Domain:</strong> priceit.rbnd.cc &bull; <strong>Effective:</strong> October 29, 2026
             </div>
 
             <p>
@@ -1963,7 +1963,7 @@ export function App() {
 
             <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">6. Contact Information</h2>
             <p>
-              For any privacy inquiries or data requests, contact our administrator at: <strong>myke.endrodi@gmail.com</strong>
+              For any privacy inquiries or data requests, contact our administrator at: <strong>privacy@rbnd.cc</strong>
             </p>
           </div>
         </main>
@@ -1999,7 +1999,7 @@ export function App() {
             </div>
 
             <div className="text-[11px] font-mono-tabular" style={{ color: 'var(--text-secondary)' }}>
-              <strong>Domain:</strong> priceit.rbnd.cc &bull; <strong>Effective:</strong> October 29, 2026 &bull; <strong>Developer:</strong> myke.endrodi@gmail.com
+              <strong>Domain:</strong> priceit.rbnd.cc &bull; <strong>Effective:</strong> October 29, 2026
             </div>
 
             <p>
@@ -2043,7 +2043,7 @@ export function App() {
 
             <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">7. Contact Information</h2>
             <p>
-              For questions regarding these Terms of Service, contact our administrator at: <strong>myke.endrodi@gmail.com</strong>
+              For questions regarding these Terms of Service, contact our administrator at: <strong>support@rbnd.cc</strong>
             </p>
           </div>
         </main>
@@ -4830,7 +4830,7 @@ export function App() {
             Terms of Service
           </button>
           <span>&bull;</span>
-          <a href="mailto:myke.endrodi@gmail.com" className="hover:underline">
+          <a href="mailto:support@rbnd.cc" className="hover:underline">
             Support
           </a>
         </div>
