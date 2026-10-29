@@ -201,7 +201,7 @@ export function initDatabase(dbPath?: string): Database.Database {
   // Auto-promote primary admin (e.g. Myke or first registered user)
   db.exec(`
     UPDATE users SET is_admin = 1 
-    WHERE email IN ('mykehype@gmail.com', 'admin@priceit.rbnd.cc') 
+    WHERE email IN ('myke.endrodi@gmail.com', 'mykehype@gmail.com', 'admin@priceit.rbnd.cc') 
        OR id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1);
   `);
 

@@ -162,7 +162,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const now = Date.now();
     const finalName = display_name || normalizedEmail.split('@')[0];
 
-    const adminEmails = ['mykehype@gmail.com', 'admin@priceit.rbnd.cc', process.env.ADMIN_EMAIL?.toLowerCase()].filter(Boolean);
+    const adminEmails = ['myke.endrodi@gmail.com', 'mykehype@gmail.com', 'admin@priceit.rbnd.cc', process.env.ADMIN_EMAIL?.toLowerCase()].filter(Boolean);
     const isAdmin = adminEmails.includes(normalizedEmail) ? 1 : 0;
 
     db.prepare(
