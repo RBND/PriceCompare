@@ -2101,6 +2101,9 @@ export function App() {
         method: 'POST',
       });
       setActiveProject((prev) => ({ ...prev, id: targetProjectId, share_token: res.share_token }));
+      if (typeof window !== 'undefined') {
+        window.history.pushState({}, document.title, `/share/${res.share_token}`);
+      }
       return res.share_token;
     } catch (err: unknown) {
       setStatusBanner({
@@ -2116,6 +2119,9 @@ export function App() {
     try {
       await apiFetch(`/api/projects/${activeProject.id}/share`, { method: 'DELETE' });
       setActiveProject((prev) => ({ ...prev, share_token: null }));
+      if (typeof window !== 'undefined' && window.location.pathname.startsWith('/share/')) {
+        window.history.replaceState({}, document.title, '/');
+      }
     } catch {}
   }
 
