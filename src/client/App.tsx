@@ -2006,6 +2006,167 @@ export function App() {
     return map;
   }, [solverResult]);
 
+  // Dedicated Route: /privacy policy (accessible directly via priceit.rbnd.cc/privacy)
+  if (currentPath.startsWith('/privacy')) {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ backgroundColor: 'var(--bg-base)' }}>
+        <header className="border-b px-6 py-3 flex items-center justify-between" style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+          <div className="flex items-center gap-2">
+            <span className="font-bold tracking-tight text-sm uppercase">PriceIt // Privacy Policy</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigateTo('/')}
+            className="text-xs px-3 py-1.5 border font-mono-tabular cursor-pointer hover:bg-[var(--bg-hover)]"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
+            ← Back to Workshop
+          </button>
+        </header>
+
+        <main className="flex-1 p-6 max-w-4xl w-full mx-auto">
+          <div className="p-6 border shadow-sm flex flex-col gap-4 text-xs leading-relaxed" style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <h1 className="font-bold text-lg uppercase tracking-wider text-[var(--text-primary)]">PriceIt Privacy Policy</h1>
+              <span className="text-[10px] font-mono-tabular px-2 py-0.5 border" style={{ backgroundColor: 'var(--accent-amber-bg)', borderColor: 'var(--accent-amber)', color: 'var(--accent-amber)' }}>
+                Official Policy
+              </span>
+            </div>
+
+            <div className="text-[11px] font-mono-tabular" style={{ color: 'var(--text-secondary)' }}>
+              <strong>Domain:</strong> priceit.rbnd.cc &bull; <strong>Effective:</strong> October 29, 2026 &bull; <strong>Developer:</strong> myke.endrodi@gmail.com
+            </div>
+
+            <p>
+              At <strong>PriceIt</strong> (&ldquo;we&rdquo;, &ldquo;our&rdquo;, or &ldquo;us&rdquo;), operating at <code>priceit.rbnd.cc</code>, we respect your privacy and are committed to protecting your personal data. This Privacy Policy explains how we collect, use, store, and safeguard information when you use the PriceIt universal parts procurement and bundle optimization platform.
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">1. Information We Collect</h2>
+            <ul className="list-disc pl-5 flex flex-col gap-1">
+              <li><strong>Google & OAuth Account Information:</strong> When signing in using Google OAuth or federated providers, we collect your name, email address, and avatar URL provided via standard <code>openid</code>, <code>email</code>, and <code>profile</code> scopes.</li>
+              <li><strong>Account Credentials:</strong> If registering via email, we store a cryptographically hashed version of your password (bcrypt work factor 11). If registering with WebAuthn/FIDO2 Passkeys, we store the public credential ID and public key. We never have access to your biometric data or private keys.</li>
+              <li><strong>Workshop & BOM Data:</strong> Bills of Materials (BOM), custom part numbers, vendor listings, pricing data, bundle mappings, and purchase orders you explicitly save to your private cloud projects.</li>
+              <li><strong>Technical & Session Information:</strong> Operating system / browser User-Agent and IP address for session security, fraud prevention, rate limiting, and device management.</li>
+            </ul>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">2. How We Use Your Information</h2>
+            <ul className="list-disc pl-5 flex flex-col gap-1">
+              <li>To authenticate your identity and provide secure access to your saved projects across devices.</li>
+              <li>To execute algorithmic bundle-kit cost solvers and purchase optimization calculations.</li>
+              <li>To send account verification and security alert emails (e.g. password resets or email updates).</li>
+              <li>To protect our platform against brute-force attacks, credential stuffing, and abuse.</li>
+            </ul>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">3. Google User Data Policy & Limited Use</h2>
+            <p>
+              PriceIt adheres strictly to the Google API Services User Data Policy, including the Limited Use requirements:
+            </p>
+            <ul className="list-disc pl-5 flex flex-col gap-1">
+              <li>We <strong>never sell, rent, or trade</strong> your Google account data or personal information to third parties, advertisers, or data brokers.</li>
+              <li>We do <strong>not</strong> use your data or project content to train generalized artificial intelligence (AI) or machine learning models.</li>
+              <li>We do not transfer your Google user data to any external parties, except as strictly necessary to operate our core service or comply with applicable law.</li>
+            </ul>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">4. Data Storage, Security & Retention</h2>
+            <p>
+              Your data is stored in isolated, encrypted production databases with strict access controls. Passwords are never stored in plaintext. Session cookies are HTTP-only and transmission is strictly enforced over TLS/HTTPS (TLS 1.2 / 1.3).
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">5. Account Deletion & Data Rights</h2>
+            <p>
+              You retain complete ownership of your data. You may export your projects to CSV at any time. You can permanently delete your user account and all associated project data directly in the application under <strong>Account Settings ➔ Sessions & Danger ➔ Permanently Delete Account</strong>.
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">6. Contact Information</h2>
+            <p>
+              For any privacy inquiries or data requests, contact our administrator at: <strong>myke.endrodi@gmail.com</strong>
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Dedicated Route: /terms of service (accessible directly via priceit.rbnd.cc/terms)
+  if (currentPath.startsWith('/terms')) {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ backgroundColor: 'var(--bg-base)' }}>
+        <header className="border-b px-6 py-3 flex items-center justify-between" style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+          <div className="flex items-center gap-2">
+            <span className="font-bold tracking-tight text-sm uppercase">PriceIt // Terms of Service</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigateTo('/')}
+            className="text-xs px-3 py-1.5 border font-mono-tabular cursor-pointer hover:bg-[var(--bg-hover)]"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
+            ← Back to Workshop
+          </button>
+        </header>
+
+        <main className="flex-1 p-6 max-w-4xl w-full mx-auto">
+          <div className="p-6 border shadow-sm flex flex-col gap-4 text-xs leading-relaxed" style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <h1 className="font-bold text-lg uppercase tracking-wider text-[var(--text-primary)]">PriceIt Terms of Service</h1>
+              <span className="text-[10px] font-mono-tabular px-2 py-0.5 border" style={{ backgroundColor: 'var(--accent-amber-bg)', borderColor: 'var(--accent-amber)', color: 'var(--accent-amber)' }}>
+                User Agreement
+              </span>
+            </div>
+
+            <div className="text-[11px] font-mono-tabular" style={{ color: 'var(--text-secondary)' }}>
+              <strong>Domain:</strong> priceit.rbnd.cc &bull; <strong>Effective:</strong> October 29, 2026 &bull; <strong>Developer:</strong> myke.endrodi@gmail.com
+            </div>
+
+            <p>
+              Welcome to <strong>PriceIt</strong> (&ldquo;we&rdquo;, &ldquo;our&rdquo;, or &ldquo;us&rdquo;), hosted at <code>priceit.rbnd.cc</code>. By accessing, registering for, or using the PriceIt application, you agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use the application.
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">1. Use of the Service</h2>
+            <p>
+              PriceIt provides tools for parts list aggregation, vendor offering comparison, and combinatorial bundle cost optimization. You agree to use the service in accordance with all applicable laws and regulations.
+            </p>
+            <ul className="list-disc pl-5 flex flex-col gap-1">
+              <li>You may not use the service to scrape, harvest, or disrupt third-party vendor platforms in violation of their respective terms.</li>
+              <li>You may not attempt to reverse engineer, disrupt, or compromise the security or availability of the PriceIt platform or infrastructure.</li>
+              <li>Accounts found attempting malicious exploitation, denial of service, or unauthorized administrative privilege escalation are subject to immediate suspension.</li>
+            </ul>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">2. Account Security & Authentication</h2>
+            <p>
+              You are responsible for maintaining the confidentiality of your account credentials, passkeys, and authentication sessions. You agree to notify us immediately of any unauthorized use of your account.
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">3. Intellectual Property & User Content</h2>
+            <p>
+              You retain all rights, title, and ownership of the Bills of Materials (BOM), custom part notes, and project data you create and store in PriceIt. We claim no ownership over your proprietary lists or project configurations.
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">4. Vendor Pricing & Third-Party Information</h2>
+            <p>
+              PriceIt provides mathematical optimization based on vendor listings, pricing, shipping tiers, and discounts entered by users or retrieved via public metadata. We do not guarantee that third-party vendors will honor prices or maintain item availability. You are solely responsible for verifying final order terms directly with vendors prior to making purchases.
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">5. Disclaimer of Warranties & Limitation of Liability</h2>
+            <p>
+              PriceIt is provided on an &ldquo;AS IS&rdquo; and &ldquo;AS AVAILABLE&rdquo; basis without warranties of any kind, whether express or implied. In no event shall PriceIt or its developers be liable for any direct, indirect, incidental, special, or consequential damages resulting from the use or inability to use the service.
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">6. Termination</h2>
+            <p>
+              You may terminate your account at any time by deleting your account from Account Settings. We reserve the right to suspend or terminate accounts that violate these Terms of Service.
+            </p>
+
+            <h2 className="font-bold text-sm uppercase text-[var(--accent-amber)] mt-2">7. Contact Information</h2>
+            <p>
+              For questions regarding these Terms of Service, contact our administrator at: <strong>myke.endrodi@gmail.com</strong>
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   // Dedicated Route: /admin directory (accessible directly via priceit.rbnd.cc/admin)
   if (currentPath.startsWith('/admin')) {
     if (authLoading) {
@@ -4766,6 +4927,30 @@ export function App() {
           </div>
         </div>
       </main>
+
+      {/* Footer with Privacy Policy & Terms of Service */}
+      <footer
+        className="no-print border-t px-6 py-3 flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono-tabular"
+        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+      >
+        <div className="flex items-center gap-2">
+          <span>PriceIt &bull; Universal Parts & Bundle Price Optimizer</span>
+          <span className="text-[10px] px-1.5 py-0.5 border" style={{ borderColor: 'var(--border-subtle)' }}>v1.0</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <button type="button" onClick={() => navigateTo('/privacy')} className="hover:underline cursor-pointer">
+            Privacy Policy
+          </button>
+          <span>&bull;</span>
+          <button type="button" onClick={() => navigateTo('/terms')} className="hover:underline cursor-pointer">
+            Terms of Service
+          </button>
+          <span>&bull;</span>
+          <a href="mailto:myke.endrodi@gmail.com" className="hover:underline">
+            Support
+          </a>
+        </div>
+      </footer>
 
       {/* Dialog 1: Hardened Auth & OAuth Modal (native <dialog closedby="any">) */}
       <dialog
