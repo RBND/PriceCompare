@@ -32,6 +32,7 @@ import {
   UserX,
   CheckCircle,
   Search,
+  Loader2,
 } from 'lucide-react';
 import {
   extractVendorFromUrl,
@@ -135,7 +136,6 @@ export function App() {
   const purchaseDialogRef = useRef<HTMLDialogElement | null>(null);
   const settingsDialogRef = useRef<HTMLDialogElement | null>(null);
   const passwordlessPromoDialogRef = useRef<HTMLDialogElement | null>(null);
-  const adminDialogRef = useRef<HTMLDialogElement | null>(null);
   const webauthnAbortRef = useRef<AbortController | null>(null);
 
   // Account Settings Modal State
@@ -166,6 +166,37 @@ export function App() {
   const [adminSearch, setAdminSearch] = useState('');
   const [isLoadingAdmin, setIsLoadingAdmin] = useState(false);
   const [adminMessage, setAdminMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Routing State for /admin and /
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    if (typeof window !== 'undefined' && window.location) {
+      return window.location.pathname || '/';
+    }
+    return '/';
+  });
+  const [authLoading, setAuthLoading] = useState(true);
+
+  const navigateTo = (path: string) => {
+    if (typeof window !== 'undefined' && window.history) {
+      window.history.pushState({}, '', path);
+      setCurrentPath(path);
+    }
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname || '/');
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (currentPath.startsWith('/admin') && user?.is_admin) {
+      void fetchAdminData();
+    }
+  }, [currentPath, user?.is_admin]);
 
   // Purchase Modal State
   const [purchaseTarget, setPurchaseTarget] = useState<
@@ -306,7 +337,6 @@ export function App() {
       purchaseDialogRef.current,
       settingsDialogRef.current,
       passwordlessPromoDialogRef.current,
-      adminDialogRef.current,
     ].filter(Boolean) as HTMLDialogElement[];
 
     const cleanups: Array<() => void> = [];
@@ -406,7 +436,10 @@ export function App() {
           await refreshCloudProjectsAndSelect(shareToken ? false : true);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        setAuthLoading(false);
+      });
   }, []);
 
   // Auto-dismiss status notification banner after 10 seconds with ticking countdown
@@ -1377,29 +1410,33 @@ export function App() {
       const options = rawRes.options || rawRes;
       const challengeId = rawRes.challengeId;
 
-      let creationOptions: CredentialCreationOptions;
+      let rawOptions = rawRes.options || rawRes;
+      if (rawOptions.publicKey) {
+        rawOptions = rawOptions.publicKey;
+      }
+
+      let publicKeyOptions: any;
       const pkc = window.PublicKeyCredential as any;
-      if (typeof pkc.parseCreationOptionsFromJSON === 'function') {
-        creationOptions = pkc.parseCreationOptionsFromJSON(options);
+      if (typeof pkc?.parseCreationOptionsFromJSON === 'function') {
+        const parsed = pkc.parseCreationOptionsFromJSON(rawOptions);
+        publicKeyOptions = parsed?.publicKey || parsed;
       } else {
-        creationOptions = {
-          publicKey: {
-            ...options,
-            challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-            user: {
-              ...options.user,
-              id: Uint8Array.from(atob(options.user.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-            },
-            excludeCredentials: (options.excludeCredentials || []).map((cred: any) => ({
-              ...cred,
-              id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-            })),
+        publicKeyOptions = {
+          ...rawOptions,
+          challenge: Uint8Array.from(atob(rawOptions.challenge.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+          user: {
+            ...rawOptions.user,
+            id: Uint8Array.from(atob(rawOptions.user.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
           },
+          excludeCredentials: (rawOptions.excludeCredentials || []).map((cred: any) => ({
+            ...cred,
+            id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+          })),
         };
       }
 
       const cred = (await navigator.credentials.create({
-        publicKey: (creationOptions as any).publicKey,
+        publicKey: publicKeyOptions,
         signal: webauthnAbortRef.current.signal,
       })) as any;
 
@@ -1531,25 +1568,29 @@ export function App() {
       const options = rawRes.options || rawRes;
       const challengeId = rawRes.challengeId;
 
-      let reqOptions: CredentialRequestOptions;
+      let rawOptions = rawRes.options || rawRes;
+      if (rawOptions.publicKey) {
+        rawOptions = rawOptions.publicKey;
+      }
+
+      let publicKeyRequestOptions: any;
       const pkc = window.PublicKeyCredential as any;
-      if (typeof pkc.parseRequestOptionsFromJSON === 'function') {
-        reqOptions = pkc.parseRequestOptionsFromJSON(options);
+      if (typeof pkc?.parseRequestOptionsFromJSON === 'function') {
+        const parsed = pkc.parseRequestOptionsFromJSON(rawOptions);
+        publicKeyRequestOptions = parsed?.publicKey || parsed;
       } else {
-        reqOptions = {
-          publicKey: {
-            ...options,
-            challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-            allowCredentials: (options.allowCredentials || []).map((cred: any) => ({
-              ...cred,
-              id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-            })),
-          },
+        publicKeyRequestOptions = {
+          ...rawOptions,
+          challenge: Uint8Array.from(atob(rawOptions.challenge.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+          allowCredentials: (rawOptions.allowCredentials || []).map((cred: any) => ({
+            ...cred,
+            id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+          })),
         };
       }
 
       const assertion = (await navigator.credentials.get({
-        publicKey: (reqOptions as any).publicKey,
+        publicKey: publicKeyRequestOptions,
         signal: webauthnAbortRef.current.signal,
       })) as any;
 
@@ -1723,10 +1764,8 @@ export function App() {
     }
   }
 
-  async function handleOpenAdminConsole() {
-    setAdminMessage(null);
-    adminDialogRef.current?.showModal();
-    await fetchAdminData();
+  function handleOpenAdminConsole() {
+    navigateTo('/admin');
   }
 
   async function handleAdminBanUser(targetUser: AdminUserPublic) {
@@ -1966,6 +2005,608 @@ export function App() {
     }
     return map;
   }, [solverResult]);
+
+  // Dedicated Route: /admin directory (accessible directly via priceit.rbnd.cc/admin)
+  if (currentPath.startsWith('/admin')) {
+    if (authLoading) {
+      return (
+        <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: 'var(--bg-base)' }}>
+          <div className="flex items-center gap-2 text-xs font-mono-tabular" style={{ color: 'var(--text-secondary)' }}>
+            <Loader2 className="w-4 h-4 animate-spin text-[var(--accent-amber)]" />
+            <span>Loading PriceIt Administration Console...</span>
+          </div>
+        </div>
+      );
+    }
+
+    if (!user) {
+      return (
+        <div className="min-h-screen flex flex-col justify-between" style={{ backgroundColor: 'var(--bg-base)' }}>
+          <header
+            className="border-b px-6 py-3 flex items-center justify-between"
+            style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+          >
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-5 h-5 text-[var(--accent-amber)]" />
+              <span className="font-mono-tabular font-bold text-sm tracking-wider uppercase">
+                PriceIt // Admin Directory (/admin)
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigateTo('/')}
+              className="text-xs px-3 py-1.5 border font-mono-tabular cursor-pointer hover:bg-[var(--bg-hover)]"
+              style={{ borderColor: 'var(--border-subtle)' }}
+            >
+              ← Back to Workshop
+            </button>
+          </header>
+
+          <main className="flex-1 flex items-center justify-center p-4">
+            <div
+              className="w-full max-w-md p-6 border shadow-lg"
+              style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+            >
+              <div className="text-center mb-6">
+                <div className="inline-flex p-3 rounded-full mb-3" style={{ backgroundColor: 'var(--accent-amber-bg)' }}>
+                  <ShieldAlert className="w-6 h-6 text-[var(--accent-amber)]" />
+                </div>
+                <h1 className="font-bold text-base uppercase tracking-wider">Restricted Administration Access</h1>
+                <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                  Sign in with an authorized administrator account to access this directory.
+                </p>
+              </div>
+
+              {authError && (
+                <div
+                  className="p-3 mb-4 text-xs border font-mono-tabular"
+                  style={{
+                    backgroundColor: 'var(--accent-danger-bg)',
+                    borderColor: 'var(--accent-danger)',
+                    color: 'var(--accent-danger)',
+                  }}
+                >
+                  {authError}
+                </div>
+              )}
+
+              <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3">
+                <div>
+                  <label className="block text-[11px] font-mono-tabular uppercase mb-1">Email</label>
+                  <input
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                    style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-mono-tabular uppercase mb-1">Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                    style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-2 text-xs font-bold uppercase border cursor-pointer mt-1"
+                  style={{
+                    backgroundColor: 'var(--accent-amber-bg)',
+                    borderColor: 'var(--accent-amber)',
+                    color: 'var(--accent-amber)',
+                  }}
+                >
+                  Sign In as Administrator
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handlePasskeySignIn}
+                  className="w-full py-2 text-xs font-semibold flex items-center justify-center gap-1.5 border cursor-pointer"
+                  style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                >
+                  <Key className="w-3.5 h-3.5 text-[var(--accent-amber)]" />
+                  Sign In with Passkey / WebAuthn
+                </button>
+              </form>
+
+              <div className="border-t pt-3 mt-4" style={{ borderColor: 'var(--border-subtle)' }}>
+                <div className="text-[11px] font-mono-tabular uppercase mb-2 text-center" style={{ color: 'var(--text-secondary)' }}>
+                  Or Federated OAuth
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => (
+                    <button
+                      key={prov}
+                      type="button"
+                      onClick={() => handleOAuthSignIn(prov)}
+                      className="px-3 py-1.5 text-xs font-mono-tabular uppercase border cursor-pointer hover:bg-[var(--bg-hover)] text-center"
+                      style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                    >
+                      {prov}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    if (!user.is_admin) {
+      return (
+        <div className="min-h-screen flex flex-col justify-between" style={{ backgroundColor: 'var(--bg-base)' }}>
+          <header
+            className="border-b px-6 py-3 flex items-center justify-between"
+            style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+          >
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-5 h-5 text-[var(--accent-danger)]" />
+              <span className="font-mono-tabular font-bold text-sm tracking-wider uppercase">PriceIt // Access Denied</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigateTo('/')}
+              className="text-xs px-3 py-1.5 border font-mono-tabular cursor-pointer hover:bg-[var(--bg-hover)]"
+              style={{ borderColor: 'var(--border-subtle)' }}
+            >
+              ← Back to Workshop
+            </button>
+          </header>
+
+          <main className="flex-1 flex items-center justify-center p-4">
+            <div
+              className="w-full max-w-md p-6 border text-center shadow-lg"
+              style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--accent-danger)' }}
+            >
+              <div className="inline-flex p-3 rounded-full mb-3" style={{ backgroundColor: 'var(--accent-danger-bg)' }}>
+                <ShieldAlert className="w-8 h-8 text-[var(--accent-danger)]" />
+              </div>
+              <h1 className="font-bold text-base text-[var(--accent-danger)] uppercase tracking-wider mb-2">
+                403 Forbidden: Administrator Privileges Required
+              </h1>
+              <p className="text-xs mb-5" style={{ color: 'var(--text-secondary)' }}>
+                Your signed-in account (<strong>{user.email}</strong>) does not have administrator privileges to view this directory.
+              </p>
+              <div className="flex justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => navigateTo('/')}
+                  className="px-4 py-2 text-xs font-bold uppercase border cursor-pointer hover:bg-[var(--bg-hover)]"
+                  style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                >
+                  ← Return to Workshop
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="px-4 py-2 text-xs font-bold uppercase border cursor-pointer"
+                  style={{
+                    backgroundColor: 'var(--accent-danger-bg)',
+                    borderColor: 'var(--accent-danger)',
+                    color: 'var(--accent-danger)',
+                  }}
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    // Authenticated administrator view
+    return (
+      <div className="min-h-screen flex flex-col" style={{ backgroundColor: 'var(--bg-base)' }}>
+        {/* Full-Page Admin Header */}
+        <header
+          className="border-b px-6 py-3 flex flex-wrap items-center justify-between gap-3"
+          style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+        >
+          <div className="flex items-center gap-3">
+            <ShieldAlert className="w-5 h-5 text-[var(--accent-amber)]" />
+            <div>
+              <div className="font-mono-tabular font-bold text-sm tracking-wider uppercase flex items-center gap-2">
+                <span>PriceIt // Admin & Moderation Console</span>
+                <span
+                  className="px-2 py-0.5 text-[10px] font-mono-tabular uppercase border"
+                  style={{
+                    backgroundColor: 'var(--accent-amber-bg)',
+                    borderColor: 'var(--accent-amber)',
+                    color: 'var(--accent-amber)',
+                  }}
+                >
+                  /admin
+                </span>
+              </div>
+              <div className="text-[11px] font-mono-tabular" style={{ color: 'var(--text-secondary)' }}>
+                Signed in as: <strong>{user.display_name}</strong> ({user.email})
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={fetchAdminData}
+              disabled={isLoadingAdmin}
+              className="text-xs px-2.5 py-1.5 border font-mono-tabular cursor-pointer flex items-center gap-1.5 hover:bg-[var(--bg-hover)]"
+              style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+              title="Refresh Data"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingAdmin ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('/')}
+              className="text-xs px-3 py-1.5 border font-mono-tabular cursor-pointer flex items-center gap-1.5 hover:bg-[var(--bg-hover)]"
+              style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+            >
+              <span>← Back to Workshop</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleColorScheme}
+              className="p-1.5 border cursor-pointer hover:bg-[var(--bg-hover)]"
+              style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+              title="Toggle Light / Dark Theme"
+            >
+              <Sun className="w-3.5 h-3.5 inline dark:hidden" />
+              <Moon className="w-3.5 h-3.5 hidden dark:inline" />
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="p-1.5 border cursor-pointer text-[var(--accent-danger)] hover:bg-[var(--accent-danger-bg)]"
+              style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+              title="Sign Out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </header>
+
+        {/* Tab Navigation */}
+        <div
+          className="flex border-b text-xs font-semibold overflow-x-auto px-6"
+          style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+        >
+          {[
+            { id: 'users', label: `Users & Moderation (${adminUsers.length})`, icon: UserCog },
+            { id: 'oauth', label: 'OAuth Setup & Keys', icon: Key },
+            { id: 'system', label: 'System Overview', icon: Settings },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = adminTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setAdminTab(tab.id as any)}
+                className={`px-4 py-2.5 border-b-2 flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  isActive
+                    ? 'border-[var(--accent-amber)] text-[var(--text-primary)] font-bold'
+                    : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Feedback / Error Message Strip */}
+        {adminMessage && (
+          <div
+            className="px-6 py-3 text-xs border-b font-mono-tabular"
+            style={{
+              backgroundColor: adminMessage.type === 'error' ? 'var(--accent-danger-bg)' : 'var(--accent-emerald-bg)',
+              borderColor: 'var(--border-subtle)',
+              color: adminMessage.type === 'error' ? 'var(--accent-danger)' : 'var(--accent-emerald)',
+            }}
+          >
+            {adminMessage.text}
+          </div>
+        )}
+
+        <main className="flex-1 p-6 max-w-7xl w-full mx-auto flex flex-col gap-6">
+          {/* TAB 1: User Moderation */}
+          {adminTab === 'users' && (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-[var(--text-muted)]" />
+                  <input
+                    type="text"
+                    placeholder="Search by email or display name..."
+                    value={adminSearch}
+                    onChange={(e) => setAdminSearch(e.target.value)}
+                    className="w-full pl-8 pr-2.5 py-1.5 text-xs font-mono-tabular border"
+                    style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                  />
+                </div>
+                <div className="text-xs text-[var(--text-secondary)] font-mono-tabular shrink-0">
+                  Showing {adminUsers.filter((u) => u.email.toLowerCase().includes(adminSearch.toLowerCase()) || u.display_name.toLowerCase().includes(adminSearch.toLowerCase())).length} of {adminUsers.length} accounts
+                </div>
+              </div>
+
+              <div className="table-wrapper">
+                <table className="workshop-table">
+                  <thead>
+                    <tr>
+                      <th>Account</th>
+                      <th>Flags & Status</th>
+                      <th>Sessions</th>
+                      <th>Projects</th>
+                      <th>Created</th>
+                      <th className="text-end">Moderation Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminUsers
+                      .filter((u) => u.email.toLowerCase().includes(adminSearch.toLowerCase()) || u.display_name.toLowerCase().includes(adminSearch.toLowerCase()))
+                      .map((u) => {
+                        const isSelf = u.id === user?.id;
+                        return (
+                          <tr key={u.id}>
+                            <td>
+                              <div className="font-semibold text-xs text-[var(--text-primary)]">{u.display_name}</div>
+                              <div className="text-[11px] font-mono-tabular" style={{ color: 'var(--text-secondary)' }}>
+                                {u.email}
+                              </div>
+                            </td>
+                            <td>
+                              <div className="flex flex-wrap gap-1">
+                                {u.is_admin && (
+                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--accent-amber-bg)] text-[var(--accent-amber)] font-bold">
+                                    ADMIN
+                                  </span>
+                                )}
+                                {u.is_banned && (
+                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--accent-danger-bg)] text-[var(--accent-danger)] font-bold">
+                                    SUSPENDED
+                                  </span>
+                                )}
+                                {u.password_reset_required && (
+                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--accent-amber-bg)] text-[var(--accent-amber)]">
+                                    LOCKED
+                                  </span>
+                                )}
+                                {u.is_passwordless ? (
+                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--accent-emerald-bg)] text-[var(--accent-emerald)]">
+                                    PWDLESS
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--bg-elevated)] text-[var(--text-secondary)]">
+                                    PASSWORD
+                                  </span>
+                                )}
+                              </div>
+                              {u.ban_reason && (
+                                <div className="text-[10px] text-[var(--accent-danger)] mt-0.5">
+                                  Reason: {u.ban_reason}
+                                </div>
+                              )}
+                            </td>
+                            <td className="font-mono-tabular text-xs">
+                              {u.active_sessions_count} active
+                            </td>
+                            <td className="font-mono-tabular text-xs">
+                              {u.projects_count}
+                            </td>
+                            <td className="font-mono-tabular text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                              {new Date(u.created_at).toLocaleDateString()}
+                            </td>
+                            <td className="text-end">
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={isSelf}
+                                  onClick={() => handleAdminBanUser(u)}
+                                  className={`px-2 py-0.5 text-[11px] border cursor-pointer disabled:opacity-30 ${
+                                    u.is_banned ? 'bg-[var(--accent-emerald-bg)] text-[var(--accent-emerald)]' : 'bg-[var(--accent-danger-bg)] text-[var(--accent-danger)]'
+                                  }`}
+                                  style={{ borderColor: 'var(--border-subtle)' }}
+                                  title={u.is_banned ? 'Unban Account' : 'Suspend & Terminate Sessions'}
+                                >
+                                  {u.is_banned ? 'Unban' : 'Suspend'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAdminResetPassword(u)}
+                                  className="px-2 py-0.5 text-[11px] border cursor-pointer hover:bg-[var(--bg-hover)]"
+                                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+                                  title="Lock account and force password reset token"
+                                >
+                                  Reset Pwd
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isSelf}
+                                  onClick={() => handleAdminPromote(u)}
+                                  className="px-2 py-0.5 text-[11px] border cursor-pointer disabled:opacity-30"
+                                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                                  title={u.is_admin ? 'Revoke Admin' : 'Grant Admin'}
+                                >
+                                  {u.is_admin ? 'Demote' : 'Make Admin'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isSelf}
+                                  onClick={() => handleAdminDeleteUser(u)}
+                                  className="px-2 py-0.5 text-[11px] border cursor-pointer text-[var(--accent-danger)] disabled:opacity-30 hover:bg-[var(--accent-danger-bg)]"
+                                  style={{ borderColor: 'var(--border-subtle)' }}
+                                  title="Delete User and projects permanently"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: OAuth Setup */}
+          {adminTab === 'oauth' && (
+            <div className="flex flex-col gap-4">
+              <div className="p-3 border text-xs" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                <p className="mb-1 font-semibold text-[var(--text-primary)]">
+                  Configure OAuth Applications & API Credentials
+                </p>
+                <p className="text-[var(--text-secondary)]">
+                  Configure your OAuth App credentials below. Values entered here take precedence over environment variables and are securely saved in SQLite.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3">
+                {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => {
+                  const currentInput = oauthInputs[prov] || { client_id: '', client_secret: '', enabled: true };
+                  const liveConfig = adminOAuthConfigs.find((c) => c.provider === prov);
+                  return (
+                    <div
+                      key={prov}
+                      className="p-3.5 border flex flex-col gap-3"
+                      style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Key className="w-4 h-4 text-[var(--accent-amber)]" />
+                          <span className="font-bold text-xs uppercase tracking-wider">{prov}</span>
+                          {liveConfig?.client_id && (
+                            <span className="text-[10px] px-1.5 py-0.2 border bg-[var(--accent-emerald-bg)] text-[var(--accent-emerald)] font-mono-tabular">
+                              CONFIGURED
+                            </span>
+                          )}
+                          {!liveConfig?.client_id && (
+                            <span className="text-[10px] px-1.5 py-0.2 border bg-[var(--bg-elevated)] text-[var(--text-muted)] font-mono-tabular">
+                              SIMULATION / MOCK
+                            </span>
+                          )}
+                        </div>
+
+                        <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={currentInput.enabled}
+                            onChange={(e) =>
+                              setOauthInputs((prev) => ({
+                                ...prev,
+                                [prov]: { ...currentInput, enabled: e.target.checked },
+                              }))
+                            }
+                          />
+                          <span>Enabled</span>
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-mono-tabular uppercase mb-1">
+                            Client ID / Application ID
+                          </label>
+                          <input
+                            type="text"
+                            value={currentInput.client_id}
+                            onChange={(e) =>
+                              setOauthInputs((prev) => ({
+                                ...prev,
+                                [prov]: { ...currentInput, client_id: e.target.value },
+                              }))
+                            }
+                            placeholder={`Enter ${prov} Client ID`}
+                            className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                            style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-mono-tabular uppercase mb-1">
+                            Client Secret {liveConfig?.is_secret_set ? '(•••••••• Configured)' : ''}
+                          </label>
+                          <input
+                            type="password"
+                            value={currentInput.client_secret}
+                            onChange={(e) =>
+                              setOauthInputs((prev) => ({
+                                ...prev,
+                                [prov]: { ...currentInput, client_secret: e.target.value },
+                              }))
+                            }
+                            placeholder={liveConfig?.is_secret_set ? 'Leave blank to keep current secret' : `Enter ${prov} Client Secret`}
+                            className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                            style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end pt-1">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveOAuthConfig(prov)}
+                          className="px-3.5 py-1.5 text-xs font-semibold border cursor-pointer"
+                          style={{
+                            backgroundColor: 'var(--accent-amber-bg)',
+                            borderColor: 'var(--accent-amber)',
+                            color: 'var(--accent-amber)',
+                          }}
+                        >
+                          Save {prov.toUpperCase()} Configuration
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: System Overview */}
+          {adminTab === 'system' && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                <div className="text-[11px] text-[var(--text-secondary)] uppercase">Total Users</div>
+                <div className="text-xl font-bold font-mono-tabular mt-1">{adminUsers.length}</div>
+              </div>
+              <div className="p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                <div className="text-[11px] text-[var(--text-secondary)] uppercase">Active Sessions</div>
+                <div className="text-xl font-bold font-mono-tabular mt-1">
+                  {adminUsers.reduce((sum, u) => sum + u.active_sessions_count, 0)}
+                </div>
+              </div>
+              <div className="p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                <div className="text-[11px] text-[var(--text-secondary)] uppercase">Cloud Projects</div>
+                <div className="text-xl font-bold font-mono-tabular mt-1">
+                  {adminUsers.reduce((sum, u) => sum + u.projects_count, 0)}
+                </div>
+              </div>
+              <div className="p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                <div className="text-[11px] text-[var(--text-secondary)] uppercase">Administrators</div>
+                <div className="text-xl font-bold font-mono-tabular mt-1">
+                  {adminUsers.filter((u) => u.is_admin).length}
+                </div>
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -2254,25 +2895,6 @@ export function App() {
             </button>
           ) : (
             <div className="inline-flex items-center gap-1.5 h-[26px] box-border">
-              {user.is_admin && (
-                <button
-                  type="button"
-                  onClick={handleOpenAdminConsole}
-                  className="h-[26px] px-2 text-xs font-mono-tabular border inline-flex items-center gap-1 cursor-pointer box-border hover:bg-[var(--bg-hover)]"
-                  style={{
-                    height: '26px',
-                    boxSizing: 'border-box',
-                    backgroundColor: 'var(--accent-amber-bg)',
-                    borderColor: 'var(--accent-amber)',
-                    color: 'var(--accent-amber)',
-                  }}
-                  title="Admin Console & Moderation"
-                  aria-label="Admin Console"
-                >
-                  <ShieldAlert className="w-3.5 h-3.5" />
-                  <span>Admin</span>
-                </button>
-              )}
               <button
                 type="button"
                 onClick={handleOpenAccountSettings}
@@ -4707,7 +5329,6 @@ export function App() {
             { id: 'oauth', label: 'OAuth Logins', icon: Key },
             { id: 'passkeys', label: 'Passkeys', icon: Smartphone },
             { id: 'sessions', label: 'Sessions & Danger', icon: Shield },
-            ...(user?.is_admin ? [{ id: 'admin_open', label: 'Admin Console ↗', icon: ShieldAlert }] : []),
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = settingsTab === tab.id;
@@ -4715,14 +5336,7 @@ export function App() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => {
-                  if (tab.id === 'admin_open') {
-                    settingsDialogRef.current?.close();
-                    handleOpenAdminConsole();
-                  } else {
-                    setSettingsTab(tab.id as any);
-                  }
-                }}
+                onClick={() => setSettingsTab(tab.id as any)}
                 className={`px-3.5 py-2.5 border-b-2 flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                   isActive ? 'border-[var(--accent-amber)] text-[var(--text-primary)] font-bold' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                 }`}
@@ -5382,374 +5996,6 @@ export function App() {
               Switch to Passwordless Now
             </button>
           </div>
-        </div>
-      </dialog>
-
-      {/* Dialog 7: Admin Console & User Moderation */}
-      <dialog
-        ref={adminDialogRef}
-        {...({ closedby: 'any' } as React.DialogHTMLAttributes<HTMLDialogElement>)}
-        aria-labelledby="admin-dialog-title"
-        className="workshop-dialog modal-lg"
-      >
-        <div
-          className="px-4 py-3 border-b flex items-center justify-between"
-          style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-        >
-          <div className="flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-[var(--accent-amber)]" />
-            <h2 id="admin-dialog-title" className="font-bold text-sm uppercase tracking-wider">
-              PriceIt Administrator Console
-            </h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={fetchAdminData}
-              disabled={isLoadingAdmin}
-              className="text-xs px-2 py-0.5 border cursor-pointer inline-flex items-center gap-1"
-              style={{ borderColor: 'var(--border-subtle)' }}
-              title="Refresh Data"
-            >
-              <RefreshCw className={`w-3 h-3 ${isLoadingAdmin ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-            <button
-              type="button"
-              onClick={() => adminDialogRef.current?.close()}
-              className="text-xs px-2 py-0.5 border cursor-pointer"
-              style={{ borderColor: 'var(--border-subtle)' }}
-            >
-              ESC
-            </button>
-          </div>
-        </div>
-
-        {/* Tab Navigation */}
-        <div
-          className="flex border-b text-xs font-semibold overflow-x-auto"
-          style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-        >
-          {[
-            { id: 'users', label: `Users & Moderation (${adminUsers.length})`, icon: UserCog },
-            { id: 'oauth', label: 'OAuth Setup & Keys', icon: Key },
-            { id: 'system', label: 'System Overview', icon: Settings },
-          ].map((tab) => {
-            const Icon = tab.icon;
-            const isActive = adminTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setAdminTab(tab.id as any)}
-                className={`px-4 py-2.5 border-b-2 flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                  isActive ? 'border-[var(--accent-amber)] text-[var(--text-primary)] font-bold' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Feedback / Error Message Strip */}
-        {adminMessage && (
-          <div
-            className="p-3 text-xs border-b font-mono-tabular"
-            style={{
-              backgroundColor: adminMessage.type === 'error' ? 'var(--accent-danger-bg)' : 'var(--accent-emerald-bg)',
-              borderColor: 'var(--border-subtle)',
-              color: adminMessage.type === 'error' ? 'var(--accent-danger)' : 'var(--accent-emerald)',
-            }}
-          >
-            {adminMessage.text}
-          </div>
-        )}
-
-        <div className="p-4 max-h-[72vh] overflow-y-auto flex flex-col gap-4">
-          {/* TAB 1: User Moderation */}
-          {adminTab === 'users' && (
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
-                <div className="relative flex-1">
-                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-[var(--text-muted)]" />
-                  <input
-                    type="text"
-                    placeholder="Search by email or display name..."
-                    value={adminSearch}
-                    onChange={(e) => setAdminSearch(e.target.value)}
-                    className="w-full pl-8 pr-2.5 py-1.5 text-xs font-mono-tabular border"
-                    style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-                  />
-                </div>
-                <div className="text-xs text-[var(--text-secondary)] font-mono-tabular shrink-0">
-                  Showing {adminUsers.filter((u) => u.email.toLowerCase().includes(adminSearch.toLowerCase()) || u.display_name.toLowerCase().includes(adminSearch.toLowerCase())).length} of {adminUsers.length} accounts
-                </div>
-              </div>
-
-              <div className="table-wrapper">
-                <table className="workshop-table">
-                  <thead>
-                    <tr>
-                      <th>Account</th>
-                      <th>Flags & Status</th>
-                      <th>Sessions</th>
-                      <th>Projects</th>
-                      <th>Created</th>
-                      <th className="text-end">Moderation Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {adminUsers
-                      .filter((u) => u.email.toLowerCase().includes(adminSearch.toLowerCase()) || u.display_name.toLowerCase().includes(adminSearch.toLowerCase()))
-                      .map((u) => {
-                        const isSelf = u.id === user?.id;
-                        return (
-                          <tr key={u.id}>
-                            <td>
-                              <div className="font-semibold text-xs text-[var(--text-primary)]">{u.display_name}</div>
-                              <div className="text-[11px] font-mono-tabular" style={{ color: 'var(--text-secondary)' }}>
-                                {u.email}
-                              </div>
-                            </td>
-                            <td>
-                              <div className="flex flex-wrap gap-1">
-                                {u.is_admin && (
-                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--accent-amber-bg)] text-[var(--accent-amber)] font-bold">
-                                    ADMIN
-                                  </span>
-                                )}
-                                {u.is_banned && (
-                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--accent-danger-bg)] text-[var(--accent-danger)] font-bold">
-                                    SUSPENDED
-                                  </span>
-                                )}
-                                {u.password_reset_required && (
-                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--accent-amber-bg)] text-[var(--accent-amber)]">
-                                    LOCKED
-                                  </span>
-                                )}
-                                {u.is_passwordless ? (
-                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--accent-emerald-bg)] text-[var(--accent-emerald)]">
-                                    PWDLESS
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] px-1.5 py-0.5 border font-mono-tabular bg-[var(--bg-elevated)] text-[var(--text-secondary)]">
-                                    PASSWORD
-                                  </span>
-                                )}
-                              </div>
-                              {u.ban_reason && (
-                                <div className="text-[10px] text-[var(--accent-danger)] mt-0.5">
-                                  Reason: {u.ban_reason}
-                                </div>
-                              )}
-                            </td>
-                            <td className="font-mono-tabular text-xs">
-                              {u.active_sessions_count} active
-                            </td>
-                            <td className="font-mono-tabular text-xs">
-                              {u.projects_count}
-                            </td>
-                            <td className="font-mono-tabular text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-                              {new Date(u.created_at).toLocaleDateString()}
-                            </td>
-                            <td className="text-end">
-                              <div className="inline-flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  disabled={isSelf}
-                                  onClick={() => handleAdminBanUser(u)}
-                                  className={`px-2 py-0.5 text-[11px] border cursor-pointer disabled:opacity-30 ${
-                                    u.is_banned ? 'bg-[var(--accent-emerald-bg)] text-[var(--accent-emerald)]' : 'bg-[var(--accent-danger-bg)] text-[var(--accent-danger)]'
-                                  }`}
-                                  style={{ borderColor: 'var(--border-subtle)' }}
-                                  title={u.is_banned ? 'Unban Account' : 'Suspend & Terminate Sessions'}
-                                >
-                                  {u.is_banned ? 'Unban' : 'Suspend'}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleAdminResetPassword(u)}
-                                  className="px-2 py-0.5 text-[11px] border cursor-pointer hover:bg-[var(--bg-hover)]"
-                                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
-                                  title="Lock account and force password reset token"
-                                >
-                                  Reset Pwd
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={isSelf}
-                                  onClick={() => handleAdminPromote(u)}
-                                  className="px-2 py-0.5 text-[11px] border cursor-pointer disabled:opacity-30"
-                                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
-                                  title={u.is_admin ? 'Revoke Admin' : 'Grant Admin'}
-                                >
-                                  {u.is_admin ? 'Demote' : 'Make Admin'}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={isSelf}
-                                  onClick={() => handleAdminDeleteUser(u)}
-                                  className="px-2 py-0.5 text-[11px] border cursor-pointer text-[var(--accent-danger)] disabled:opacity-30 hover:bg-[var(--accent-danger-bg)]"
-                                  style={{ borderColor: 'var(--border-subtle)' }}
-                                  title="Delete User and projects permanently"
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: OAuth Setup */}
-          {adminTab === 'oauth' && (
-            <div className="flex flex-col gap-4">
-              <div className="p-3 border text-xs" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
-                <p className="mb-1 font-semibold text-[var(--text-primary)]">
-                  Configure OAuth Applications & API Credentials
-                </p>
-                <p className="text-[var(--text-secondary)]">
-                  Configure your OAuth App credentials below. Values entered here take precedence over environment variables and are securely saved in SQLite.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3">
-                {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => {
-                  const currentInput = oauthInputs[prov] || { client_id: '', client_secret: '', enabled: true };
-                  const liveConfig = adminOAuthConfigs.find((c) => c.provider === prov);
-                  return (
-                    <div
-                      key={prov}
-                      className="p-3.5 border flex flex-col gap-3"
-                      style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Key className="w-4 h-4 text-[var(--accent-amber)]" />
-                          <span className="font-bold text-xs uppercase tracking-wider">{prov}</span>
-                          {liveConfig?.client_id && (
-                            <span className="text-[10px] px-1.5 py-0.2 border bg-[var(--accent-emerald-bg)] text-[var(--accent-emerald)] font-mono-tabular">
-                              CONFIGURED
-                            </span>
-                          )}
-                          {!liveConfig?.client_id && (
-                            <span className="text-[10px] px-1.5 py-0.2 border bg-[var(--bg-elevated)] text-[var(--text-muted)] font-mono-tabular">
-                              SIMULATION / MOCK
-                            </span>
-                          )}
-                        </div>
-
-                        <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={currentInput.enabled}
-                            onChange={(e) =>
-                              setOauthInputs((prev) => ({
-                                ...prev,
-                                [prov]: { ...currentInput, enabled: e.target.checked },
-                              }))
-                            }
-                          />
-                          <span>Enabled</span>
-                        </label>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-mono-tabular uppercase mb-1">
-                            Client ID / Application ID
-                          </label>
-                          <input
-                            type="text"
-                            value={currentInput.client_id}
-                            onChange={(e) =>
-                              setOauthInputs((prev) => ({
-                                ...prev,
-                                [prov]: { ...currentInput, client_id: e.target.value },
-                              }))
-                            }
-                            placeholder={`Enter ${prov} Client ID`}
-                            className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
-                            style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-mono-tabular uppercase mb-1">
-                            Client Secret {liveConfig?.is_secret_set ? '(•••••••• Configured)' : ''}
-                          </label>
-                          <input
-                            type="password"
-                            value={currentInput.client_secret}
-                            onChange={(e) =>
-                              setOauthInputs((prev) => ({
-                                ...prev,
-                                [prov]: { ...currentInput, client_secret: e.target.value },
-                              }))
-                            }
-                            placeholder={liveConfig?.is_secret_set ? 'Leave blank to keep current secret' : `Enter ${prov} Client Secret`}
-                            className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
-                            style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex justify-end pt-1">
-                        <button
-                          type="button"
-                          onClick={() => handleSaveOAuthConfig(prov)}
-                          className="px-3.5 py-1.5 text-xs font-semibold border cursor-pointer"
-                          style={{
-                            backgroundColor: 'var(--accent-amber-bg)',
-                            borderColor: 'var(--accent-amber)',
-                            color: 'var(--accent-amber)',
-                          }}
-                        >
-                          Save {prov.toUpperCase()} Configuration
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* TAB 3: System Overview */}
-          {adminTab === 'system' && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
-                <div className="text-[11px] text-[var(--text-secondary)] uppercase">Total Users</div>
-                <div className="text-xl font-bold font-mono-tabular mt-1">{adminUsers.length}</div>
-              </div>
-              <div className="p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
-                <div className="text-[11px] text-[var(--text-secondary)] uppercase">Active Sessions</div>
-                <div className="text-xl font-bold font-mono-tabular mt-1">
-                  {adminUsers.reduce((sum, u) => sum + u.active_sessions_count, 0)}
-                </div>
-              </div>
-              <div className="p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
-                <div className="text-[11px] text-[var(--text-secondary)] uppercase">Cloud Projects</div>
-                <div className="text-xl font-bold font-mono-tabular mt-1">
-                  {adminUsers.reduce((sum, u) => sum + u.projects_count, 0)}
-                </div>
-              </div>
-              <div className="p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
-                <div className="text-[11px] text-[var(--text-secondary)] uppercase">Administrators</div>
-                <div className="text-xl font-bold font-mono-tabular mt-1">
-                  {adminUsers.filter((u) => u.is_admin).length}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </dialog>
     </div>
