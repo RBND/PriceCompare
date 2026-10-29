@@ -128,11 +128,71 @@ export function initDatabase(dbPath?: string): Database.Database {
       purchased_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS passkeys (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      public_key TEXT NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      device_type TEXT NOT NULL DEFAULT 'singleDevice',
+      backed_up INTEGER NOT NULL DEFAULT 0,
+      transports TEXT NOT NULL DEFAULT '[]',
+      aaguid TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+      provider_icon TEXT,
+      name TEXT NOT NULL DEFAULT 'Passkey',
+      registered_at INTEGER NOT NULL,
+      last_used_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS webauthn_challenges (
+      id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      session_hash TEXT,
+      challenge TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      expected_uv TEXT NOT NULL DEFAULT 'preferred',
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS email_verifications (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      new_email TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
     CREATE INDEX IF NOT EXISTS idx_parts_project_id ON parts(project_id);
     CREATE INDEX IF NOT EXISTS idx_offerings_project_id ON offerings(project_id);
     CREATE INDEX IF NOT EXISTS idx_purchases_project_id ON purchases(project_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_oauth_accounts_user_id ON oauth_accounts(user_id);
+    CREATE INDEX IF NOT EXISTS idx_passkeys_user_id ON passkeys(user_id);
+    CREATE INDEX IF NOT EXISTS idx_email_verifications_user_id ON email_verifications(user_id);
+    CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_expires ON webauthn_challenges(expires_at);
+  `);
+
+  function ensureColumn(table: string, column: string, definition: string): void {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
+  ensureColumn('users', 'is_passwordless', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('sessions', 'session_uid', 'TEXT');
+  ensureColumn('sessions', 'ip_address', "TEXT DEFAULT ''");
+  ensureColumn('sessions', 'user_agent', "TEXT DEFAULT ''");
+  ensureColumn('sessions', 'last_active_at', 'INTEGER');
+  ensureColumn('sessions', 'reauthenticated_at', 'INTEGER');
+
+  // Backfill session_uid and last_active_at for any pre-existing sessions
+  db.exec(`
+    UPDATE sessions
+    SET session_uid = hex(randomblob(16)),
+        last_active_at = COALESCE(last_active_at, created_at)
+    WHERE session_uid IS NULL;
   `);
 
   return db;

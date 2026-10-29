@@ -149,13 +149,97 @@ export const AuthLoginSchema = z.object({
   guest_migration: GuestMigrationPayloadSchema.optional(),
 });
 
+export const OAuthProviderSchema = z.enum([
+  'google',
+  'microsoft',
+  'facebook',
+  'github',
+  'reddit',
+  'meta',
+]);
+export type OAuthProvider = z.infer<typeof OAuthProviderSchema>;
+
 export const OAuthSimulateSchema = z.object({
-  provider: z.enum(['google', 'microsoft', 'reddit', 'meta']),
+  provider: OAuthProviderSchema,
   provider_account_id: z.string().trim().min(1).max(255),
   email: z.string().trim().email().max(255),
   display_name: z.string().trim().min(1).max(100).optional(),
   guest_migration: GuestMigrationPayloadSchema.optional(),
 });
+
+export const UpdateProfileSchema = z.object({
+  display_name: z.string().trim().min(1).max(100),
+});
+
+export const ChangeEmailRequestSchema = z.object({
+  new_email: z.string().trim().email().max(255),
+  current_password: z.string().min(1).max(128).optional(),
+});
+
+export const VerifyEmailTokenSchema = z.object({
+  token: z.string().trim().min(16).max(256),
+});
+
+export const ChangePasswordSchema = z.object({
+  current_password: z.string().min(1).max(128),
+  new_password: z.string().min(8).max(128),
+});
+
+export const RemovePasswordSchema = z.object({
+  current_password: z.string().min(1).max(128).optional(),
+});
+
+export const OAuthLinkSchema = z.object({
+  provider: z.enum(['google', 'microsoft', 'facebook', 'github', 'reddit']),
+  provider_account_id: z.string().trim().min(1).max(255).optional(),
+  email: z.string().trim().email().max(255).optional(),
+});
+
+export const PasskeyRenameSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+});
+
+export const DeleteAccountSchema = z.object({
+  confirmation: z.literal('DELETE'),
+  current_password: z.string().min(1).max(128).optional(),
+});
+
+export interface PasskeyPublic {
+  id: string; // Base64URL credential ID
+  name: string;
+  aaguid: string;
+  provider_icon?: string;
+  device_type: 'singleDevice' | 'multiDevice';
+  backed_up: boolean;
+  transports: string[];
+  registered_at: number;
+  last_used_at: number | null;
+}
+
+export interface OAuthAccountPublic {
+  id: string;
+  provider: string;
+  provider_account_id: string;
+  created_at: number;
+}
+
+export interface SessionPublic {
+  session_uid: string;
+  ip_address: string;
+  user_agent: string;
+  created_at: number;
+  last_active_at: number;
+  is_current: boolean;
+}
+
+export interface AccountSecurityState {
+  has_password: boolean;
+  is_passwordless: boolean;
+  pending_email: string | null;
+  oauth_accounts: OAuthAccountPublic[];
+  passkeys: PasskeyPublic[];
+  sessions: SessionPublic[];
+}
 
 export type Part = z.infer<typeof PartSchema>;
 export type BundleMapping = z.infer<typeof BundleMappingSchema>;
@@ -170,4 +254,6 @@ export interface UserPublic {
   email: string;
   display_name: string;
   email_verified: boolean;
+  has_password?: boolean;
+  is_passwordless?: boolean;
 }

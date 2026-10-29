@@ -312,4 +312,210 @@ describe('Security Controls, Auth, OAuth Linking Safety, Idempotent Guest Migrat
     expect(extractVendorFromUrl('https://custompartsstore.io/item/123')).toBe('Custompartsstore');
     expect(extractVendorFromUrl('javascript:alert(1)')).toBe('');
   });
+
+  describe('Account Settings, Passkeys, OAuth Linking & Session Management', () => {
+    it('manages profile, email verification, multi-session auto-logout on password change, passkey registration, and passwordless switch', async () => {
+      // 1. Register a fresh user
+      const registerRes = await request(app)
+        .post('/api/auth/register')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'craftsperson@workshop.org',
+          password: 'InitialPassword123!',
+          display_name: 'Original Name',
+        });
+      expect(registerRes.status).toBe(201);
+      const sessionCookie1 = registerRes.headers['set-cookie'][0];
+
+      // 2. GET /api/auth/account returns security state
+      const accRes = await request(app)
+        .get('/api/auth/account')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie1);
+      expect(accRes.status).toBe(200);
+      expect(accRes.body.has_password).toBe(true);
+      expect(accRes.body.is_passwordless).toBe(false);
+      expect(accRes.body.sessions).toHaveLength(1);
+      expect(accRes.body.sessions[0].is_current).toBe(true);
+      expect(accRes.body.passkeys).toHaveLength(0);
+      expect(accRes.body.oauth_accounts).toHaveLength(0);
+
+      // 3. PUT /api/auth/profile updates display name
+      const profileRes = await request(app)
+        .put('/api/auth/profile')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie1)
+        .send({ display_name: 'Updated Craftsperson' });
+      expect(profileRes.status).toBe(200);
+      expect(profileRes.body.user.display_name).toBe('Updated Craftsperson');
+
+      // 4. Create a second active session by logging in again
+      const loginRes2 = await request(app)
+        .post('/api/auth/login')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'craftsperson@workshop.org',
+          password: 'InitialPassword123!',
+        });
+      expect(loginRes2.status).toBe(200);
+      const sessionCookie2 = loginRes2.headers['set-cookie'][0];
+
+      // Verify two active sessions exist
+      const accRes2 = await request(app)
+        .get('/api/auth/account')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2);
+      expect(accRes2.body.sessions).toHaveLength(2);
+
+      // 5. POST /api/auth/password/change from session 2 -> must revoke session 1
+      const changePassRes = await request(app)
+        .post('/api/auth/password/change')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({
+          current_password: 'InitialPassword123!',
+          new_password: 'NewSecurePassword456!',
+        });
+      expect(changePassRes.status).toBe(200);
+      expect(changePassRes.body.revoked_other_sessions).toBe(true);
+
+      // Session 1 is now revoked: /api/auth/account returns 401 and /api/auth/me returns user: null
+      const testRevokedAcc = await request(app)
+        .get('/api/auth/account')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie1);
+      expect(testRevokedAcc.status).toBe(401);
+
+      const testRevokedMe = await request(app)
+        .get('/api/auth/me')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie1);
+      expect(testRevokedMe.status).toBe(200);
+      expect(testRevokedMe.body.user).toBeNull();
+
+      // Session 2 is still valid
+      const testActiveRes = await request(app)
+        .get('/api/auth/me')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2);
+      expect(testActiveRes.status).toBe(200);
+      expect(testActiveRes.body.user.display_name).toBe('Updated Craftsperson');
+
+      // 6. Request and verify email change
+      const emailReqRes = await request(app)
+        .post('/api/auth/email/request')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({
+          new_email: 'newemail@workshop.org',
+          current_password: 'NewSecurePassword456!',
+        });
+      expect(emailReqRes.status).toBe(200);
+      expect(emailReqRes.body.pending_email).toBe('newemail@workshop.org');
+      expect(emailReqRes.body.dev_token).toBeDefined();
+
+      const verifyEmailRes = await request(app)
+        .post('/api/auth/email/verify')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({ token: emailReqRes.body.dev_token });
+      expect(verifyEmailRes.status).toBe(200);
+      expect(verifyEmailRes.body.user.email).toBe('newemail@workshop.org');
+
+      // 7. Link an OAuth account (GitHub)
+      const linkOAuthRes = await request(app)
+        .post('/api/auth/oauth/link')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({ provider: 'github' });
+      expect(linkOAuthRes.status).toBe(200);
+      expect(linkOAuthRes.body.oauth_accounts).toHaveLength(1);
+
+      // 8. Register a Passkey via test mock bypass
+      const mockCredId = 'mock-fido2-cred-id-12345';
+      const registerPasskeyRes = await request(app)
+        .post('/api/auth/passkeys/register/verify')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({
+          mock_passkey: true,
+          id: mockCredId,
+          rawId: mockCredId,
+          custom_name: 'YubiKey 5C NFC',
+          device_type: 'singleDevice',
+          backed_up: false,
+        });
+      expect(registerPasskeyRes.status).toBe(200);
+      expect(registerPasskeyRes.body.verified).toBe(true);
+      expect(registerPasskeyRes.body.passkey.name).toBe('YubiKey 5C NFC');
+
+      // Rename passkey
+      const renameRes = await request(app)
+        .put(`/api/auth/passkeys/${encodeURIComponent(mockCredId)}`)
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({ name: 'Work YubiKey 5C' });
+      expect(renameRes.status).toBe(200);
+      expect(renameRes.body.passkey.name).toBe('Work YubiKey 5C');
+
+      // 9. Switch to 100% passwordless
+      const removePassRes = await request(app)
+        .post('/api/auth/password/remove')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({});
+      expect(removePassRes.status).toBe(200);
+      expect(removePassRes.body.is_passwordless).toBe(true);
+
+      // Attempting to change password now fails (enforcing passwordless invariant)
+      const changePassBlockedRes = await request(app)
+        .post('/api/auth/password/change')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({
+          current_password: 'NewSecurePassword456!',
+          new_password: 'AnotherPassword789!',
+        });
+      expect(changePassBlockedRes.status).toBe(400);
+      expect(changePassBlockedRes.body.error).toContain('passwordless');
+
+      // 10. Attempting to revoke both OAuth and Passkey (blocking last factor lockout)
+      // Unlink github
+      const unlinkRes = await request(app)
+        .delete('/api/auth/oauth/github')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2);
+      expect(unlinkRes.status).toBe(200);
+
+      // Now passkey is the ONLY factor left -> deleting it MUST be rejected with 400
+      const deleteLastPasskeyRes = await request(app)
+        .delete(`/api/auth/passkeys/${encodeURIComponent(mockCredId)}`)
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2);
+      expect(deleteLastPasskeyRes.status).toBe(400);
+      expect(deleteLastPasskeyRes.body.error).toContain('Cannot revoke your last remaining sign-in method');
+
+      // 11. Delete Account
+      const deleteAccRes = await request(app)
+        .post('/api/auth/account/delete')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2)
+        .send({ confirmation: 'DELETE' });
+      expect(deleteAccRes.status).toBe(200);
+      expect(deleteAccRes.body.ok).toBe(true);
+
+      // User session is completely terminated
+      const afterDeleteRes = await request(app)
+        .get('/api/auth/account')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2);
+      expect(afterDeleteRes.status).toBe(401);
+
+      const afterDeleteMe = await request(app)
+        .get('/api/auth/me')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', sessionCookie2);
+      expect(afterDeleteMe.body.user).toBeNull();
+    });
+  });
 });

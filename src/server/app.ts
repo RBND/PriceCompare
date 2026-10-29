@@ -5,11 +5,26 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} from '@simplewebauthn/server';
+import {
   AuthRegisterSchema,
   AuthLoginSchema,
   OAuthSimulateSchema,
+  UpdateProfileSchema,
+  ChangeEmailRequestSchema,
+  VerifyEmailTokenSchema,
+  ChangePasswordSchema,
+  RemovePasswordSchema,
+  OAuthLinkSchema,
+  PasskeyRenameSchema,
+  DeleteAccountSchema,
   ProjectPayloadSchema,
   GuestMigrationPayloadSchema,
+  type AccountSecurityState,
 } from '../shared/types.js';
 import {
   hashPassword,
@@ -21,6 +36,9 @@ import {
   csrfProtectionMiddleware,
   AuthRateLimiter,
   getAuthenticatedUser,
+  getCurrentSessionHash,
+  countUserLoginMethods,
+  sendVerificationEmail,
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
 } from './auth.js';
@@ -62,15 +80,19 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
   // Apply CSRF & Origin validation to all /api routes
   app.use('/api', csrfProtectionMiddleware);
 
-  function createSessionForUser(userId: string, res: express.Response): void {
+  function createSessionForUser(userId: string, res: express.Response, req?: express.Request): void {
     const rawToken = generateSessionToken();
     const tokenHash = hashSessionToken(rawToken);
     const now = Date.now();
+    const sessionUid = crypto.randomUUID();
+    const ip = req ? (req.ip || '127.0.0.1').slice(0, 100) : '127.0.0.1';
+    const userAgent = req ? String(req.headers['user-agent'] || 'Browser').slice(0, 255) : 'Browser';
+
     db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).run(now);
     db.prepare(
-      `INSERT INTO sessions (id, user_id, expires_at, created_at)
-       VALUES (?, ?, ?, ?)`
-    ).run(tokenHash, userId, now + SESSION_TTL_MS, now);
+      `INSERT INTO sessions (id, session_uid, user_id, ip_address, user_agent, last_active_at, reauthenticated_at, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(tokenHash, sessionUid, userId, ip, userAgent, now, now, now + SESSION_TTL_MS, now);
     setSessionCookie(res, rawToken);
   }
 
@@ -79,7 +101,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const user = getAuthenticatedUser(db, req);
     res.json({
       user,
-      oauth_providers: ['google', 'microsoft', 'reddit', 'meta'],
+      oauth_providers: ['google', 'microsoft', 'facebook', 'github', 'reddit'],
     });
   });
 
@@ -128,7 +150,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
     const migratedProjectId = migrateGuestProjectIfDirty(db, userId, guest_migration);
 
-    createSessionForUser(userId, res);
+    createSessionForUser(userId, res, req);
 
     res.status(201).json({
       user: {
@@ -192,7 +214,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     }
 
     const migratedProjectId = migrateGuestProjectIfDirty(db, userRow.id, guest_migration);
-    createSessionForUser(userRow.id, res);
+    createSessionForUser(userRow.id, res, req);
 
     res.json({
       user: {
@@ -302,7 +324,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     tx();
 
     const migratedProjectId = migrateGuestProjectIfDirty(db, userId!, guest_migration);
-    createSessionForUser(userId!, res);
+    createSessionForUser(userId!, res, req);
 
     res.json({
       user: {
@@ -324,6 +346,1067 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     }
     clearSessionCookie(res);
     res.json({ ok: true });
+  });
+
+  // WebAuthn Relying Party & AAGUID Resolution Helper
+  function getRpConfig(req: express.Request): { rpID: string; rpName: string; origin: string } {
+    const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || 'localhost') as string;
+    const host = String(hostHeader).split(',')[0].trim();
+    const hostname = host.split(':')[0];
+    const protoHeader = (req.headers['x-forwarded-proto'] || req.protocol || 'http') as string;
+    const proto = String(protoHeader).split(',')[0].trim();
+    const origin = req.headers.origin || `${proto}://${host}`;
+    return {
+      rpID: process.env.WEBAUTHN_RP_ID || (hostname === 'localhost' || hostname === '127.0.0.1' ? 'localhost' : hostname),
+      rpName: 'PriceIt Workshop',
+      origin,
+    };
+  }
+
+  const AAGUID_MAP: Record<string, { name: string }> = {
+    'ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4': { name: 'Google Password Manager' },
+    'fbfc3007-154e-4ecc-8c0b-6e020557d7bd': { name: 'iCloud Keychain' },
+    'adce0002-35bc-c60a-648b-0b25f1f05503': { name: 'Chrome on Mac' },
+    '08987058-cadc-4b81-b6e1-30de50dcbe96': { name: 'Windows Hello' },
+    'bada5566-a7aa-401f-bd96-45619a55120d': { name: '1Password' },
+    'd548826e-79b4-db40-a3d8-11116f7e8349': { name: 'Bitwarden' },
+    '6028b017-b1d4-4202-9b56-492e6633ee1a': { name: 'Dashlane' },
+  };
+
+  function resolveAaguidName(aaguid: string): string {
+    if (!aaguid || aaguid === '00000000-0000-0000-0000-000000000000') {
+      return 'Passkey';
+    }
+    return AAGUID_MAP[aaguid]?.name || 'Passkey';
+  }
+
+  // GET /api/auth/account (Comprehensive security & account state)
+  app.get('/api/auth/account', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const currentSessionHash = getCurrentSessionHash(req);
+    const now = Date.now();
+
+    const userRow = db
+      .prepare(`SELECT password_hash, is_passwordless FROM users WHERE id = ?`)
+      .get(user.id) as { password_hash: string | null; is_passwordless: number } | undefined;
+
+    const pendingEmailRow = db
+      .prepare(`SELECT new_email FROM email_verifications WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1`)
+      .get(user.id, now) as { new_email: string } | undefined;
+
+    const oauthRows = db
+      .prepare(`SELECT id, provider, provider_account_id, created_at FROM oauth_accounts WHERE user_id = ? ORDER BY created_at ASC`)
+      .all(user.id) as Array<{ id: string; provider: string; provider_account_id: string; created_at: number }>;
+
+    const passkeyRows = db
+      .prepare(`SELECT id, name, aaguid, provider_icon, device_type, backed_up, transports, registered_at, last_used_at FROM passkeys WHERE user_id = ? ORDER BY registered_at DESC`)
+      .all(user.id) as Array<{
+        id: string;
+        name: string;
+        aaguid: string;
+        provider_icon: string | null;
+        device_type: 'singleDevice' | 'multiDevice';
+        backed_up: number;
+        transports: string;
+        registered_at: number;
+        last_used_at: number | null;
+      }>;
+
+    const sessionRows = db
+      .prepare(`SELECT id, session_uid, ip_address, user_agent, created_at, last_active_at FROM sessions WHERE user_id = ? AND expires_at > ? ORDER BY last_active_at DESC`)
+      .all(user.id, now) as Array<{
+        id: string;
+        session_uid: string | null;
+        ip_address: string;
+        user_agent: string;
+        created_at: number;
+        last_active_at: number;
+      }>;
+
+    const state: AccountSecurityState = {
+      has_password: Boolean(userRow && userRow.password_hash !== null),
+      is_passwordless: Boolean(userRow && (userRow.is_passwordless || userRow.password_hash === null)),
+      pending_email: pendingEmailRow ? pendingEmailRow.new_email : null,
+      oauth_accounts: oauthRows,
+      passkeys: passkeyRows.map((p) => {
+        let parsedTransports: string[] = [];
+        try {
+          parsedTransports = JSON.parse(p.transports || '[]');
+        } catch {}
+        return {
+          id: p.id,
+          name: p.name,
+          aaguid: p.aaguid,
+          provider_icon: p.provider_icon || undefined,
+          device_type: p.device_type,
+          backed_up: Boolean(p.backed_up),
+          transports: parsedTransports,
+          registered_at: p.registered_at,
+          last_used_at: p.last_used_at,
+        };
+      }),
+      sessions: sessionRows.map((s) => ({
+        session_uid: s.session_uid || s.id.slice(0, 16),
+        ip_address: s.ip_address || '127.0.0.1',
+        user_agent: s.user_agent || 'Browser',
+        created_at: s.created_at,
+        last_active_at: s.last_active_at || s.created_at,
+        is_current: s.id === currentSessionHash,
+      })),
+    };
+
+    res.json(state);
+  });
+
+  // PUT /api/auth/profile
+  app.put('/api/auth/profile', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const parsed = UpdateProfileSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid profile data', details: parsed.error.flatten() });
+      return;
+    }
+
+    const now = Date.now();
+    db.prepare(`UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?`).run(
+      parsed.data.display_name,
+      now,
+      user.id
+    );
+
+    res.json({
+      user: {
+        ...user,
+        display_name: parsed.data.display_name,
+      },
+    });
+  });
+
+  // POST /api/auth/email/request
+  app.post('/api/auth/email/request', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const parsed = ChangeEmailRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid email payload', details: parsed.error.flatten() });
+      return;
+    }
+
+    const normalizedNew = parsed.data.new_email.toLowerCase();
+    if (normalizedNew === user.email.toLowerCase()) {
+      res.status(400).json({ error: 'New email must be different from current email.' });
+      return;
+    }
+
+    const currentSessionHash = getCurrentSessionHash(req);
+    const now = Date.now();
+
+    const sessionRow = db
+      .prepare(`SELECT reauthenticated_at FROM sessions WHERE id = ?`)
+      .get(currentSessionHash) as { reauthenticated_at: number | null } | undefined;
+
+    const userRow = db
+      .prepare(`SELECT password_hash FROM users WHERE id = ?`)
+      .get(user.id) as { password_hash: string | null } | undefined;
+
+    const isReauthenticated = sessionRow && sessionRow.reauthenticated_at && now - sessionRow.reauthenticated_at <= 5 * 60 * 1000;
+
+    if (userRow?.password_hash !== null) {
+      if (!parsed.data.current_password && !isReauthenticated) {
+        res.status(401).json({ error: 'Current password is required to change email.' });
+        return;
+      }
+      if (parsed.data.current_password) {
+        const valid = await verifyPassword(parsed.data.current_password, userRow!.password_hash!);
+        if (!valid) {
+          res.status(401).json({ error: 'Incorrect current password.' });
+          return;
+        }
+      }
+    } else {
+      if (!isReauthenticated) {
+        res.status(401).json({
+          error: 'Please re-authenticate with your passkey first to verify account ownership.',
+          code: 'REAUTH_REQUIRED',
+        });
+        return;
+      }
+    }
+
+    const existingUser = db.prepare(`SELECT id FROM users WHERE email = ?`).get(normalizedNew);
+    if (existingUser) {
+      res.status(409).json({ error: 'An account with that email already exists.' });
+      return;
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('base64url');
+    const tokenHash = hashSessionToken(rawToken);
+
+    db.transaction(() => {
+      db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(user.id);
+      db.prepare(
+        `INSERT INTO email_verifications (token_hash, user_id, new_email, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(tokenHash, user.id, normalizedNew, now + 30 * 60 * 1000, now);
+    })();
+
+    const mailRes = await sendVerificationEmail(normalizedNew, rawToken);
+
+    res.json({
+      ok: true,
+      pending_email: normalizedNew,
+      dev_token: mailRes.dev_token,
+    });
+  });
+
+  // POST /api/auth/email/verify
+  app.post('/api/auth/email/verify', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const parsed = VerifyEmailTokenSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid verification token payload', details: parsed.error.flatten() });
+      return;
+    }
+
+    const tokenHash = hashSessionToken(parsed.data.token);
+    const now = Date.now();
+    const currentSessionHash = getCurrentSessionHash(req);
+
+    const record = db
+      .prepare(`SELECT new_email, expires_at FROM email_verifications WHERE token_hash = ? AND user_id = ?`)
+      .get(tokenHash, user.id) as { new_email: string; expires_at: number } | undefined;
+
+    if (!record) {
+      res.status(400).json({ error: 'Invalid or already consumed verification token.' });
+      return;
+    }
+
+    if (record.expires_at <= now) {
+      db.prepare(`DELETE FROM email_verifications WHERE token_hash = ?`).run(tokenHash);
+      res.status(400).json({ error: 'Verification token has expired. Please request a new one.' });
+      return;
+    }
+
+    const existingConflict = db.prepare(`SELECT id FROM users WHERE email = ? AND id != ?`).get(record.new_email, user.id);
+    if (existingConflict) {
+      res.status(409).json({ error: 'An account with that email has already been registered.' });
+      return;
+    }
+
+    db.transaction(() => {
+      db.prepare(`UPDATE users SET email = ?, email_verified = 1, updated_at = ? WHERE id = ?`).run(
+        record.new_email,
+        now,
+        user.id
+      );
+      db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(user.id);
+      // Revoke all other sessions on email change
+      if (currentSessionHash) {
+        db.prepare(`DELETE FROM sessions WHERE user_id = ? AND id != ?`).run(user.id, currentSessionHash);
+      }
+    })();
+
+    res.json({
+      ok: true,
+      user: {
+        ...user,
+        email: record.new_email,
+        email_verified: true,
+      },
+    });
+  });
+
+  // POST /api/auth/password/change
+  app.post('/api/auth/password/change', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const parsed = ChangePasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid password payload', details: parsed.error.flatten() });
+      return;
+    }
+
+    const userRow = db
+      .prepare(`SELECT password_hash, is_passwordless FROM users WHERE id = ?`)
+      .get(user.id) as { password_hash: string | null; is_passwordless: number } | undefined;
+
+    if (!userRow || userRow.password_hash === null || userRow.is_passwordless === 1) {
+      res.status(400).json({
+        error: 'This account has switched to passwordless mode. It is secured exclusively via Passkeys or OAuth.',
+      });
+      return;
+    }
+
+    const valid = await verifyPassword(parsed.data.current_password, userRow.password_hash);
+    if (!valid) {
+      res.status(401).json({ error: 'Current password does not match.' });
+      return;
+    }
+
+    const newHash = await hashPassword(parsed.data.new_password);
+    const now = Date.now();
+    const currentSessionHash = getCurrentSessionHash(req);
+
+    db.transaction(() => {
+      db.prepare(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`).run(newHash, now, user.id);
+      // Auto-revoke all other sessions upon password change
+      if (currentSessionHash) {
+        db.prepare(`DELETE FROM sessions WHERE user_id = ? AND id != ?`).run(user.id, currentSessionHash);
+      }
+    })();
+
+    res.json({ ok: true, revoked_other_sessions: true });
+  });
+
+  // POST /api/auth/password/remove (Switch to 100% Passwordless Account)
+  app.post('/api/auth/password/remove', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const userRow = db
+      .prepare(`SELECT password_hash, is_passwordless FROM users WHERE id = ?`)
+      .get(user.id) as { password_hash: string | null; is_passwordless: number } | undefined;
+
+    if (!userRow || userRow.password_hash === null) {
+      res.json({ ok: true, is_passwordless: true });
+      return;
+    }
+
+    const currentSessionHash = getCurrentSessionHash(req);
+    const now = Date.now();
+    const sessionRow = db
+      .prepare(`SELECT reauthenticated_at FROM sessions WHERE id = ?`)
+      .get(currentSessionHash) as { reauthenticated_at: number | null } | undefined;
+
+    const isReauthenticated = sessionRow && sessionRow.reauthenticated_at && now - sessionRow.reauthenticated_at <= 5 * 60 * 1000;
+
+    const parsed = RemovePasswordSchema.safeParse(req.body);
+    if (parsed.success && parsed.data.current_password) {
+      const valid = await verifyPassword(parsed.data.current_password, userRow.password_hash);
+      if (!valid) {
+        res.status(401).json({ error: 'Current password does not match.' });
+        return;
+      }
+    } else if (!isReauthenticated) {
+      res.status(401).json({ error: 'Re-authentication required to switch to passwordless mode.', code: 'REAUTH_REQUIRED' });
+      return;
+    }
+
+    const counts = countUserLoginMethods(db, user.id);
+    if (counts.passkeyCount + counts.oauthCount < 1) {
+      res.status(400).json({
+        error: 'You must add at least one Passkey or connect an OAuth account before removing your password.',
+      });
+      return;
+    }
+
+    db.transaction(() => {
+      db.prepare(`UPDATE users SET password_hash = NULL, is_passwordless = 1, updated_at = ? WHERE id = ?`).run(
+        now,
+        user.id
+      );
+      if (currentSessionHash) {
+        db.prepare(`DELETE FROM sessions WHERE user_id = ? AND id != ?`).run(user.id, currentSessionHash);
+      }
+    })();
+
+    res.json({ ok: true, is_passwordless: true });
+  });
+
+  // POST /api/auth/oauth/link
+  app.post('/api/auth/oauth/link', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const parsed = OAuthLinkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid OAuth link payload', details: parsed.error.flatten() });
+      return;
+    }
+
+    const { provider } = parsed.data;
+    const providerAccountId = parsed.data.provider_account_id || `oauth-${provider}-${user.id}`;
+    const now = Date.now();
+    const currentSessionHash = getCurrentSessionHash(req);
+
+    let conflict = false;
+    db.transaction(() => {
+      const existing = db
+        .prepare(`SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_account_id = ?`)
+        .get(provider, providerAccountId) as { user_id: string } | undefined;
+
+      if (existing && existing.user_id !== user.id) {
+        conflict = true;
+        return;
+      }
+
+      const alreadyLinked = db
+        .prepare(`SELECT id FROM oauth_accounts WHERE user_id = ? AND provider = ?`)
+        .get(user.id, provider);
+
+      if (!alreadyLinked) {
+        db.prepare(
+          `INSERT INTO oauth_accounts (id, user_id, provider, provider_account_id, created_at)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(crypto.randomUUID(), user.id, provider, providerAccountId, now);
+      }
+
+      if (currentSessionHash) {
+        db.prepare(`UPDATE sessions SET reauthenticated_at = ? WHERE id = ?`).run(now, currentSessionHash);
+      }
+    })();
+
+    if (conflict) {
+      res.status(409).json({ error: 'This OAuth account is already linked to a different PriceIt user.' });
+      return;
+    }
+
+    const oauthAccounts = db
+      .prepare(`SELECT id, provider, provider_account_id, created_at FROM oauth_accounts WHERE user_id = ?`)
+      .all(user.id);
+
+    res.json({ ok: true, oauth_accounts: oauthAccounts });
+  });
+
+  // DELETE /api/auth/oauth/:provider
+  app.delete('/api/auth/oauth/:provider', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const provider = req.params.provider;
+    let errorMsg: string | null = null;
+
+    db.transaction(() => {
+      const existing = db
+        .prepare(`SELECT id FROM oauth_accounts WHERE user_id = ? AND provider = ?`)
+        .get(user.id, provider);
+
+      if (!existing) {
+        errorMsg = 'OAuth provider is not connected.';
+        return;
+      }
+
+      const counts = countUserLoginMethods(db, user.id);
+      if (counts.total <= 1) {
+        errorMsg = 'Cannot disconnect your only remaining sign-in method.';
+        return;
+      }
+
+      db.prepare(`DELETE FROM oauth_accounts WHERE user_id = ? AND provider = ?`).run(user.id, provider);
+    })();
+
+    if (errorMsg) {
+      res.status(400).json({ error: errorMsg });
+      return;
+    }
+
+    res.json({ ok: true });
+  });
+
+  // POST /api/auth/passkeys/register/options
+  app.post('/api/auth/passkeys/register/options', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const { rpID, rpName } = getRpConfig(req);
+    const existingPasskeys = db
+      .prepare(`SELECT id, transports FROM passkeys WHERE user_id = ?`)
+      .all(user.id) as Array<{ id: string; transports: string }>;
+
+    const excludeCredentials = existingPasskeys.map((p) => {
+      let tr: any[] = [];
+      try {
+        tr = JSON.parse(p.transports || '[]');
+      } catch {}
+      return {
+        id: p.id,
+        transports: tr,
+      };
+    });
+
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID,
+      userID: new Uint8Array(Buffer.from(user.id)),
+      userName: user.email,
+      userDisplayName: user.display_name,
+      attestationType: 'none',
+      excludeCredentials,
+      authenticatorSelection: {
+        residentKey: 'required',
+        userVerification: 'preferred',
+      },
+    });
+
+    const now = Date.now();
+    const challengeId = crypto.randomUUID();
+    const currentSessionHash = getCurrentSessionHash(req);
+
+    db.prepare(
+      `INSERT INTO webauthn_challenges (id, user_id, session_hash, challenge, purpose, expected_uv, expires_at, created_at)
+       VALUES (?, ?, ?, ?, 'register', 'preferred', ?, ?)`
+    ).run(challengeId, user.id, currentSessionHash, options.challenge, now + 5 * 60 * 1000, now);
+
+    res.json({
+      options,
+      challengeId,
+      rpId: rpID,
+      userIdBase64Url: Buffer.from(user.id).toString('base64url'),
+    });
+  });
+
+  // POST /api/auth/passkeys/register/verify
+  app.post('/api/auth/passkeys/register/verify', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const { challengeId, response: credResponse, custom_name, mock_passkey } = req.body;
+    const now = Date.now();
+    const currentSessionHash = getCurrentSessionHash(req);
+
+    // Dev/Test Mock Passkey Bypass (enabled strictly for non-production Vitest execution)
+    if (process.env.NODE_ENV !== 'production' && mock_passkey) {
+      const mockId = req.body?.id || credResponse?.id || `mock-passkey-${crypto.randomUUID()}`;
+      const mockName = custom_name || 'Mock Security Key';
+      db.prepare(
+        `INSERT INTO passkeys (id, user_id, public_key, counter, device_type, backed_up, transports, aaguid, provider_icon, name, registered_at, last_used_at)
+         VALUES (?, ?, ?, 0, 'singleDevice', 0, '["internal"]', '00000000-0000-0000-0000-000000000000', NULL, ?, ?, ?)`
+      ).run(mockId, user.id, 'mock-public-key', mockName, now, now);
+
+      if (currentSessionHash) {
+        db.prepare(`UPDATE sessions SET reauthenticated_at = ? WHERE id = ?`).run(now, currentSessionHash);
+      }
+
+      res.json({
+        verified: true,
+        passkey: {
+          id: mockId,
+          name: mockName,
+          registered_at: now,
+        },
+        can_switch_passwordless: user.has_password,
+      });
+      return;
+    }
+
+    const challengeRow = db
+      .prepare(`SELECT challenge, expected_uv, expires_at FROM webauthn_challenges WHERE id = ? AND user_id = ? AND purpose = 'register'`)
+      .get(challengeId, user.id) as { challenge: string; expected_uv: string; expires_at: number } | undefined;
+
+    if (!challengeRow || challengeRow.expires_at <= now) {
+      res.status(400).json({ error: 'WebAuthn challenge expired or invalid.' });
+      return;
+    }
+
+    db.prepare(`DELETE FROM webauthn_challenges WHERE id = ?`).run(challengeId);
+
+    const { rpID, origin } = getRpConfig(req);
+    let verification;
+    try {
+      verification = await verifyRegistrationResponse({
+        response: credResponse,
+        expectedChallenge: challengeRow.challenge,
+        expectedOrigin: origin,
+        expectedRPID: rpID,
+        requireUserVerification: challengeRow.expected_uv === 'required',
+      });
+    } catch (err: unknown) {
+      res.status(400).json({ error: (err as Error).message || 'WebAuthn verification failed' });
+      return;
+    }
+
+    if (!verification.verified || !verification.registrationInfo) {
+      res.status(400).json({ error: 'Passkey registration verification failed.' });
+      return;
+    }
+
+    const { credential, credentialDeviceType, credentialBackedUp, aaguid } = verification.registrationInfo;
+    const finalName = custom_name?.trim() || resolveAaguidName(aaguid);
+    const pubKeyBase64 = Buffer.from(credential.publicKey).toString('base64url');
+    const transportsJson = JSON.stringify(credResponse.response?.transports || []);
+
+    db.prepare(
+      `INSERT INTO passkeys (id, user_id, public_key, counter, device_type, backed_up, transports, aaguid, provider_icon, name, registered_at, last_used_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
+    ).run(
+      credential.id,
+      user.id,
+      pubKeyBase64,
+      credential.counter,
+      credentialDeviceType,
+      credentialBackedUp ? 1 : 0,
+      transportsJson,
+      aaguid || '00000000-0000-0000-0000-000000000000',
+      finalName,
+      now,
+      now
+    );
+
+    if (currentSessionHash) {
+      db.prepare(`UPDATE sessions SET reauthenticated_at = ? WHERE id = ?`).run(now, currentSessionHash);
+    }
+
+    res.json({
+      verified: true,
+      passkey: {
+        id: credential.id,
+        name: finalName,
+        registered_at: now,
+      },
+      can_switch_passwordless: user.has_password,
+    });
+  });
+
+  // POST /api/auth/passkeys/login/options
+  app.post('/api/auth/passkeys/login/options', async (req, res) => {
+    const { rpID } = getRpConfig(req);
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials: [],
+      userVerification: 'preferred',
+    });
+
+    const now = Date.now();
+    const challengeId = crypto.randomUUID();
+
+    db.prepare(
+      `INSERT INTO webauthn_challenges (id, user_id, session_hash, challenge, purpose, expected_uv, expires_at, created_at)
+       VALUES (?, NULL, NULL, ?, 'login', 'preferred', ?, ?)`
+    ).run(challengeId, options.challenge, now + 5 * 60 * 1000, now);
+
+    res.json({
+      options,
+      challengeId,
+      rpId: rpID,
+    });
+  });
+
+  // POST /api/auth/passkeys/login/verify
+  app.post('/api/auth/passkeys/login/verify', async (req, res) => {
+    const { challengeId, response: credResponse } = req.body;
+    const now = Date.now();
+
+    const passkeyRow = db
+      .prepare(`SELECT id, user_id, public_key, counter FROM passkeys WHERE id = ?`)
+      .get(credResponse?.id) as { id: string; user_id: string; public_key: string; counter: number } | undefined;
+
+    // Per modern-web-guidance: return HTTP 404 so client calls signalUnknownCredential
+    if (!passkeyRow) {
+      res.status(404).json({ error: 'Passkey credential not found.' });
+      return;
+    }
+
+    const challengeRow = db
+      .prepare(`SELECT challenge, expected_uv, expires_at FROM webauthn_challenges WHERE id = ? AND purpose = 'login'`)
+      .get(challengeId) as { challenge: string; expected_uv: string; expires_at: number } | undefined;
+
+    if (!challengeRow || challengeRow.expires_at <= now) {
+      res.status(400).json({ error: 'WebAuthn login challenge expired or invalid.' });
+      return;
+    }
+
+    db.prepare(`DELETE FROM webauthn_challenges WHERE id = ?`).run(challengeId);
+
+    const { rpID, origin } = getRpConfig(req);
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response: credResponse,
+        expectedChallenge: challengeRow.challenge,
+        expectedOrigin: origin,
+        expectedRPID: rpID,
+        credential: {
+          id: passkeyRow.id,
+          publicKey: new Uint8Array(Buffer.from(passkeyRow.public_key, 'base64url')),
+          counter: passkeyRow.counter,
+        },
+        requireUserVerification: challengeRow.expected_uv === 'required',
+      });
+    } catch (err: unknown) {
+      res.status(400).json({ error: (err as Error).message || 'Authentication assertion verification failed.' });
+      return;
+    }
+
+    if (!verification.verified) {
+      res.status(400).json({ error: 'Passkey authentication failed.' });
+      return;
+    }
+
+    db.prepare(`UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?`).run(
+      verification.authenticationInfo.newCounter,
+      now,
+      passkeyRow.id
+    );
+
+    const userRow = db
+      .prepare(`SELECT id, email, display_name, email_verified FROM users WHERE id = ?`)
+      .get(passkeyRow.user_id) as { id: string; email: string; display_name: string | null; email_verified: number };
+
+    createSessionForUser(userRow.id, res, req);
+
+    res.json({
+      user: {
+        id: userRow.id,
+        email: userRow.email,
+        display_name: userRow.display_name || userRow.email.split('@')[0],
+        email_verified: Boolean(userRow.email_verified),
+      },
+    });
+  });
+
+  // POST /api/auth/reauth/options (Step-Up Reauthentication for logged in user)
+  app.post('/api/auth/reauth/options', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const { rpID } = getRpConfig(req);
+    const userPasskeys = db
+      .prepare(`SELECT id, transports FROM passkeys WHERE user_id = ?`)
+      .all(user.id) as Array<{ id: string; transports: string }>;
+
+    const allowCredentials = userPasskeys.map((p) => {
+      let tr: any[] = [];
+      try {
+        tr = JSON.parse(p.transports || '[]');
+      } catch {}
+      return {
+        id: p.id,
+        transports: tr,
+      };
+    });
+
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials,
+      userVerification: 'preferred',
+    });
+
+    const now = Date.now();
+    const challengeId = crypto.randomUUID();
+    const currentSessionHash = getCurrentSessionHash(req);
+
+    db.prepare(
+      `INSERT INTO webauthn_challenges (id, user_id, session_hash, challenge, purpose, expected_uv, expires_at, created_at)
+       VALUES (?, ?, ?, ?, 'reauth', 'preferred', ?, ?)`
+    ).run(challengeId, user.id, currentSessionHash, options.challenge, now + 5 * 60 * 1000, now);
+
+    res.json({
+      options,
+      challengeId,
+      rpId: rpID,
+      hasPasskeys: userPasskeys.length > 0,
+    });
+  });
+
+  // POST /api/auth/reauth/verify
+  app.post('/api/auth/reauth/verify', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const { challengeId, response: credResponse } = req.body;
+    const now = Date.now();
+    const currentSessionHash = getCurrentSessionHash(req);
+
+    const passkeyRow = db
+      .prepare(`SELECT id, user_id, public_key, counter FROM passkeys WHERE id = ?`)
+      .get(credResponse?.id) as { id: string; user_id: string; public_key: string; counter: number } | undefined;
+
+    if (!passkeyRow || passkeyRow.user_id !== user.id) {
+      res.status(404).json({ error: 'Matching user passkey not found.' });
+      return;
+    }
+
+    const challengeRow = db
+      .prepare(`SELECT challenge, expected_uv, expires_at FROM webauthn_challenges WHERE id = ? AND user_id = ? AND purpose = 'reauth'`)
+      .get(challengeId, user.id) as { challenge: string; expected_uv: string; expires_at: number } | undefined;
+
+    if (!challengeRow || challengeRow.expires_at <= now) {
+      res.status(400).json({ error: 'Re-authentication challenge expired.' });
+      return;
+    }
+
+    db.prepare(`DELETE FROM webauthn_challenges WHERE id = ?`).run(challengeId);
+
+    const { rpID, origin } = getRpConfig(req);
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response: credResponse,
+        expectedChallenge: challengeRow.challenge,
+        expectedOrigin: origin,
+        expectedRPID: rpID,
+        credential: {
+          id: passkeyRow.id,
+          publicKey: new Uint8Array(Buffer.from(passkeyRow.public_key, 'base64url')),
+          counter: passkeyRow.counter,
+        },
+        requireUserVerification: challengeRow.expected_uv === 'required',
+      });
+    } catch (err: unknown) {
+      res.status(400).json({ error: (err as Error).message || 'Re-authentication verification failed.' });
+      return;
+    }
+
+    if (!verification.verified) {
+      res.status(400).json({ error: 'Passkey re-authentication failed.' });
+      return;
+    }
+
+    db.prepare(`UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?`).run(
+      verification.authenticationInfo.newCounter,
+      now,
+      passkeyRow.id
+    );
+
+    if (currentSessionHash) {
+      db.prepare(`UPDATE sessions SET reauthenticated_at = ? WHERE id = ?`).run(now, currentSessionHash);
+    }
+
+    res.json({ verified: true });
+  });
+
+  // POST /api/auth/reauth/password
+  app.post('/api/auth/reauth/password', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const { current_password } = req.body;
+    const userRow = db
+      .prepare(`SELECT password_hash FROM users WHERE id = ?`)
+      .get(user.id) as { password_hash: string | null } | undefined;
+
+    if (!userRow || userRow.password_hash === null) {
+      res.status(400).json({ error: 'Account has no password set.' });
+      return;
+    }
+
+    const valid = await verifyPassword(current_password || '', userRow.password_hash);
+    if (!valid) {
+      res.status(401).json({ error: 'Incorrect current password.' });
+      return;
+    }
+
+    const currentSessionHash = getCurrentSessionHash(req);
+    const now = Date.now();
+    if (currentSessionHash) {
+      db.prepare(`UPDATE sessions SET reauthenticated_at = ? WHERE id = ?`).run(now, currentSessionHash);
+    }
+
+    res.json({ verified: true });
+  });
+
+  // PUT /api/auth/passkeys/:id
+  app.put('/api/auth/passkeys/:id', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const parsed = PasskeyRenameSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid name payload', details: parsed.error.flatten() });
+      return;
+    }
+
+    const info = db
+      .prepare(`UPDATE passkeys SET name = ? WHERE id = ? AND user_id = ?`)
+      .run(parsed.data.name, req.params.id, user.id);
+
+    if (info.changes === 0) {
+      res.status(404).json({ error: 'Passkey not found.' });
+      return;
+    }
+
+    res.json({ ok: true, name: parsed.data.name, passkey: { id: req.params.id, name: parsed.data.name } });
+  });
+
+  // DELETE /api/auth/passkeys/:id
+  app.delete('/api/auth/passkeys/:id', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    let errorMsg: string | null = null;
+    let remainingIds: string[] = [];
+
+    db.transaction(() => {
+      const existing = db.prepare(`SELECT id FROM passkeys WHERE id = ? AND user_id = ?`).get(req.params.id, user.id);
+      if (!existing) {
+        errorMsg = 'Passkey not found.';
+        return;
+      }
+
+      const counts = countUserLoginMethods(db, user.id);
+      if (counts.total <= 1) {
+        errorMsg = 'Cannot revoke your last remaining sign-in method.';
+        return;
+      }
+
+      db.prepare(`DELETE FROM passkeys WHERE id = ? AND user_id = ?`).run(req.params.id, user.id);
+      const remaining = db.prepare(`SELECT id FROM passkeys WHERE user_id = ?`).all(user.id) as Array<{ id: string }>;
+      remainingIds = remaining.map((r) => r.id);
+    })();
+
+    if (errorMsg) {
+      res.status(400).json({ error: errorMsg });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      remaining_credential_ids: remainingIds,
+      rpId: getRpConfig(req).rpID,
+      userIdBase64Url: Buffer.from(user.id).toString('base64url'),
+    });
+  });
+
+  // POST /api/auth/sessions/revoke-others
+  app.post('/api/auth/sessions/revoke-others', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const currentSessionHash = getCurrentSessionHash(req);
+    if (!currentSessionHash) {
+      res.status(400).json({ error: 'Session not identified.' });
+      return;
+    }
+
+    const info = db.prepare(`DELETE FROM sessions WHERE user_id = ? AND id != ?`).run(user.id, currentSessionHash);
+    res.json({ ok: true, revoked_count: info.changes });
+  });
+
+  // DELETE /api/auth/sessions/:sessionUid
+  app.delete('/api/auth/sessions/:sessionUid', (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const sessionUid = req.params.sessionUid;
+    const currentSessionHash = getCurrentSessionHash(req);
+
+    db.prepare(`DELETE FROM sessions WHERE user_id = ? AND (session_uid = ? OR id = ?) AND id != ?`).run(
+      user.id,
+      sessionUid,
+      sessionUid,
+      currentSessionHash || ''
+    );
+
+    res.json({ ok: true });
+  });
+
+  // POST /api/auth/account/delete
+  app.post('/api/auth/account/delete', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const parsed = DeleteAccountSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Confirmation must strictly equal 'DELETE'.", details: parsed.error.flatten() });
+      return;
+    }
+
+    const userRow = db
+      .prepare(`SELECT password_hash FROM users WHERE id = ?`)
+      .get(user.id) as { password_hash: string | null } | undefined;
+
+    const currentSessionHash = getCurrentSessionHash(req);
+    const now = Date.now();
+    const sessionRow = db
+      .prepare(`SELECT reauthenticated_at FROM sessions WHERE id = ?`)
+      .get(currentSessionHash) as { reauthenticated_at: number | null } | undefined;
+
+    const isReauthenticated = sessionRow && sessionRow.reauthenticated_at && now - sessionRow.reauthenticated_at <= 5 * 60 * 1000;
+
+    if (userRow?.password_hash !== null) {
+      if (!parsed.data.current_password && !isReauthenticated) {
+        res.status(401).json({ error: 'Current password is required to delete your account.' });
+        return;
+      }
+      if (parsed.data.current_password) {
+        const valid = await verifyPassword(parsed.data.current_password, userRow!.password_hash!);
+        if (!valid) {
+          res.status(401).json({ error: 'Incorrect current password.' });
+          return;
+        }
+      }
+    } else {
+      if (!isReauthenticated) {
+        res.status(401).json({ error: 'Re-authentication required to delete account.', code: 'REAUTH_REQUIRED' });
+        return;
+      }
+    }
+
+    const { rpID } = getRpConfig(req);
+    const userIdBase64Url = Buffer.from(user.id).toString('base64url');
+
+    db.transaction(() => {
+      db.prepare(`DELETE FROM users WHERE id = ?`).run(user.id);
+    })();
+
+    clearSessionCookie(res);
+    res.json({
+      ok: true,
+      rpId: rpID,
+      userIdBase64Url,
+    });
   });
 
   // POST /api/projects/migrate-guest

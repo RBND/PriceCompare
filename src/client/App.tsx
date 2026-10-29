@@ -20,6 +20,12 @@ import {
   Copy,
   Sparkles,
   FileSpreadsheet,
+  Shield,
+  Key,
+  Mail,
+  Lock,
+  Smartphone,
+  UserCog,
 } from 'lucide-react';
 import {
   extractVendorFromUrl,
@@ -32,6 +38,10 @@ import {
   type PurchaseRecord,
   type UserPublic,
   type GuestMigrationPayload,
+  type AccountSecurityState,
+  type PasskeyPublic,
+  type OAuthAccountPublic,
+  type SessionPublic,
 } from '../shared/types.js';
 import { solveBundleOptimization, type SolverResult, type SolverInput } from '../shared/solver.js';
 import { generateProjectCsv, formatCentsToDollars } from '../shared/export.js';
@@ -116,6 +126,27 @@ export function App() {
   const vendorDialogRef = useRef<HTMLDialogElement | null>(null);
   const shareDialogRef = useRef<HTMLDialogElement | null>(null);
   const purchaseDialogRef = useRef<HTMLDialogElement | null>(null);
+  const settingsDialogRef = useRef<HTMLDialogElement | null>(null);
+  const passwordlessPromoDialogRef = useRef<HTMLDialogElement | null>(null);
+  const webauthnAbortRef = useRef<AbortController | null>(null);
+
+  // Account Settings Modal State
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'security' | 'oauth' | 'passkeys' | 'sessions'>('profile');
+  const [accountSecurity, setAccountSecurity] = useState<AccountSecurityState | null>(null);
+  const [isLoadingAccountSecurity, setIsLoadingAccountSecurity] = useState(false);
+  const [profileDisplayName, setProfileDisplayName] = useState('');
+  const [newEmailInput, setNewEmailInput] = useState('');
+  const [emailCurrentPassword, setEmailCurrentPassword] = useState('');
+  const [verifyEmailTokenInput, setVerifyEmailTokenInput] = useState('');
+  const [changePassCurrent, setChangePassCurrent] = useState('');
+  const [changePassNew, setChangePassNew] = useState('');
+  const [changePassConfirm, setChangePassConfirm] = useState('');
+  const [deleteAccountConfirm, setDeleteAccountConfirm] = useState('');
+  const [deleteAccountPassword, setDeleteAccountPassword] = useState('');
+  const [passkeyCustomName, setPasskeyCustomName] = useState('');
+  const [editingPasskeyId, setEditingPasskeyId] = useState<string | null>(null);
+  const [editingPasskeyName, setEditingPasskeyName] = useState('');
+  const [accountMessage, setAccountMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   // Purchase Modal State
   const [purchaseTarget, setPurchaseTarget] = useState<
@@ -243,13 +274,19 @@ export function App() {
   const [newOffDiscount, setNewOffDiscount] = useState('');
   const [newOffSelectedParts, setNewOffSelectedParts] = useState<Record<string, number>>({});
 
-  // Setup native <dialog> fallback for browsers without closedBy support (per modern-web-guidance: light-dismiss-a-dialog)
+  // Polyfill WebAuthn if available and setup native <dialog> fallback for browsers without closedBy support (per modern-web-guidance: light-dismiss-a-dialog)
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      import('webauthn-polyfills').catch(() => {});
+    }
+
     const dialogs = [
       authDialogRef.current,
       vendorDialogRef.current,
       shareDialogRef.current,
       purchaseDialogRef.current,
+      settingsDialogRef.current,
+      passwordlessPromoDialogRef.current,
     ].filter(Boolean) as HTMLDialogElement[];
 
     const cleanups: Array<() => void> = [];
@@ -982,7 +1019,7 @@ export function App() {
     }
   }
 
-  async function handleOAuthSignIn(provider: 'google' | 'microsoft' | 'reddit' | 'meta') {
+  async function handleOAuthSignIn(provider: 'google' | 'microsoft' | 'facebook' | 'github' | 'reddit' | 'meta') {
     setAuthError('');
     try {
       const emailToUse = authEmail.trim() || `user.${provider}@priceit.rbnd.cc`;
@@ -1028,6 +1065,604 @@ export function App() {
     setGuestState(freshGuest);
     setActiveProject(freshGuest.project);
     setStatusBanner({ type: 'info', text: 'Signed out. Switched to local Guest workspace.' });
+  }
+
+  // WebAuthn Signal API helpers
+  async function syncAcceptedCredentials(rpId: string, userIdBase64Url: string, credentialIds: string[]) {
+    if (typeof window === 'undefined') return;
+    try {
+      const pkc = (window as unknown as { PublicKeyCredential?: Record<string, unknown> }).PublicKeyCredential;
+      if (pkc && typeof pkc.signalAllAcceptedCredentials === 'function') {
+        await (pkc.signalAllAcceptedCredentials as (opts: unknown) => Promise<void>)({
+          rpId,
+          userId: userIdBase64Url,
+          allAcceptedCredentialIds: credentialIds,
+        });
+      }
+    } catch (e) {
+      console.warn('[WebAuthn] signalAllAcceptedCredentials error:', e);
+    }
+  }
+
+  async function syncCurrentUserDetails(rpId: string, userIdBase64Url: string, name: string, displayName: string) {
+    if (typeof window === 'undefined') return;
+    try {
+      const pkc = (window as unknown as { PublicKeyCredential?: Record<string, unknown> }).PublicKeyCredential;
+      if (pkc && typeof pkc.signalCurrentUserDetails === 'function') {
+        await (pkc.signalCurrentUserDetails as (opts: unknown) => Promise<void>)({
+          rpId,
+          userId: userIdBase64Url,
+          name,
+          displayName,
+        });
+      }
+    } catch (e) {
+      console.warn('[WebAuthn] signalCurrentUserDetails error:', e);
+    }
+  }
+
+  async function signalUnknownCredential(rpId: string, credentialId: string) {
+    if (typeof window === 'undefined') return;
+    try {
+      const pkc = (window as unknown as { PublicKeyCredential?: Record<string, unknown> }).PublicKeyCredential;
+      if (pkc && typeof pkc.signalUnknownCredential === 'function') {
+        await (pkc.signalUnknownCredential as (opts: unknown) => Promise<void>)({
+          rpId,
+          credentialId,
+        });
+      }
+    } catch (e) {
+      console.warn('[WebAuthn] signalUnknownCredential error:', e);
+    }
+  }
+
+  async function fetchAccountSecurity() {
+    try {
+      setIsLoadingAccountSecurity(true);
+      const res = await apiFetch<AccountSecurityState>('/api/auth/account');
+      setAccountSecurity(res);
+      setProfileDisplayName(res.display_name || user?.display_name || '');
+      if (res.rp_id && res.user_id_base64url) {
+        await syncAcceptedCredentials(res.rp_id, res.user_id_base64url, res.passkeys.map((p) => p.id));
+      }
+      return res;
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to fetch account security',
+      });
+      return null;
+    } finally {
+      setIsLoadingAccountSecurity(false);
+    }
+  }
+
+  async function handleOpenAccountSettings() {
+    setAccountMessage(null);
+    setNewEmailInput('');
+    setEmailCurrentPassword('');
+    setVerifyEmailTokenInput('');
+    setChangePassCurrent('');
+    setChangePassNew('');
+    setChangePassConfirm('');
+    setDeleteAccountConfirm('');
+    setDeleteAccountPassword('');
+    setPasskeyCustomName('');
+    setEditingPasskeyId(null);
+    settingsDialogRef.current?.showModal();
+    await fetchAccountSecurity();
+  }
+
+  async function handleUpdateProfile(e: React.FormEvent) {
+    e.preventDefault();
+    setAccountMessage(null);
+    try {
+      const res = await apiFetch<{ user: UserPublic }>('/api/auth/profile', {
+        method: 'PUT',
+        body: JSON.stringify({ display_name: profileDisplayName }),
+      });
+      setUser(res.user);
+      setAccountMessage({ type: 'success', text: 'Display name updated.' });
+      if (accountSecurity?.rp_id && accountSecurity?.user_id_base64url) {
+        await syncCurrentUserDetails(
+          accountSecurity.rp_id,
+          accountSecurity.user_id_base64url,
+          res.user.email,
+          res.user.display_name
+        );
+      }
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to update profile',
+      });
+    }
+  }
+
+  async function handleRequestEmailChange(e: React.FormEvent) {
+    e.preventDefault();
+    setAccountMessage(null);
+    try {
+      const res = await apiFetch<{ ok: boolean; pending_email: string; dev_token?: string }>(
+        '/api/auth/email/request',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            new_email: newEmailInput.trim(),
+            current_password: emailCurrentPassword || undefined,
+          }),
+        }
+      );
+      setAccountMessage({
+        type: 'info',
+        text: res.dev_token
+          ? `Verification requested! Dev token: ${res.dev_token}`
+          : `Verification email sent to ${res.pending_email}. Please check your inbox or spam folder.`,
+      });
+      if (res.dev_token) {
+        setVerifyEmailTokenInput(res.dev_token);
+      }
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to request email change',
+      });
+    }
+  }
+
+  async function handleVerifyEmailToken(e: React.FormEvent) {
+    e.preventDefault();
+    setAccountMessage(null);
+    try {
+      const res = await apiFetch<{ ok: boolean; user: UserPublic }>('/api/auth/email/verify', {
+        method: 'POST',
+        body: JSON.stringify({ token: verifyEmailTokenInput.trim() }),
+      });
+      setUser(res.user);
+      setVerifyEmailTokenInput('');
+      setNewEmailInput('');
+      setEmailCurrentPassword('');
+      setAccountMessage({ type: 'success', text: `Email successfully verified and updated to ${res.user.email}!` });
+      if (accountSecurity?.rp_id && accountSecurity?.user_id_base64url) {
+        await syncCurrentUserDetails(
+          accountSecurity.rp_id,
+          accountSecurity.user_id_base64url,
+          res.user.email,
+          res.user.display_name
+        );
+      }
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Verification failed',
+      });
+    }
+  }
+
+  async function handleChangePassword(e: React.FormEvent) {
+    e.preventDefault();
+    setAccountMessage(null);
+    if (changePassNew !== changePassConfirm) {
+      setAccountMessage({ type: 'error', text: 'New passwords do not match.' });
+      return;
+    }
+    try {
+      await apiFetch<{ ok: boolean; revoked_other_sessions: boolean }>('/api/auth/password/change', {
+        method: 'POST',
+        body: JSON.stringify({
+          current_password: changePassCurrent,
+          new_password: changePassNew,
+        }),
+      });
+      setChangePassCurrent('');
+      setChangePassNew('');
+      setChangePassConfirm('');
+      setAccountMessage({
+        type: 'success',
+        text: 'Password successfully changed. All other active sessions have been signed out.',
+      });
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to change password',
+      });
+    }
+  }
+
+  async function handleRemovePassword() {
+    setAccountMessage(null);
+    try {
+      await apiFetch<{ ok: boolean; is_passwordless: boolean }>('/api/auth/password/remove', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      passwordlessPromoDialogRef.current?.close();
+      setAccountMessage({
+        type: 'success',
+        text: 'Account converted to 100% passwordless! Password has been securely removed.',
+      });
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to remove password',
+      });
+    }
+  }
+
+  async function handleLinkOAuth(provider: 'google' | 'microsoft' | 'facebook' | 'github' | 'reddit') {
+    setAccountMessage(null);
+    try {
+      const email = user?.email || `user.${provider}@priceit.rbnd.cc`;
+      await apiFetch('/api/auth/oauth/link', {
+        method: 'POST',
+        body: JSON.stringify({
+          provider,
+          email,
+          provider_account_id: `oauth-${provider}-${user?.id || Date.now()}`,
+        }),
+      });
+      setAccountMessage({
+        type: 'success',
+        text: `Connected ${provider.toUpperCase()} account successfully.`,
+      });
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : `Failed to link ${provider}`,
+      });
+    }
+  }
+
+  async function handleUnlinkOAuth(provider: string) {
+    setAccountMessage(null);
+    try {
+      await apiFetch(`/api/auth/oauth/${provider}`, { method: 'DELETE' });
+      setAccountMessage({
+        type: 'success',
+        text: `Disconnected ${provider.toUpperCase()} account.`,
+      });
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : `Failed to unlink ${provider}`,
+      });
+    }
+  }
+
+  async function handleAddPasskey() {
+    setAccountMessage(null);
+    if (typeof window === 'undefined' || !window.PublicKeyCredential) {
+      setAccountMessage({
+        type: 'error',
+        text: 'WebAuthn / Passkeys are not supported in this browser.',
+      });
+      return;
+    }
+
+    try {
+      webauthnAbortRef.current?.abort();
+      webauthnAbortRef.current = new AbortController();
+
+      const options = await apiFetch<any>('/api/auth/passkeys/register/options', {
+        method: 'POST',
+        body: JSON.stringify({ custom_name: passkeyCustomName.trim() || undefined }),
+      });
+
+      let creationOptions: CredentialCreationOptions;
+      const pkc = window.PublicKeyCredential as any;
+      if (typeof pkc.parseCreationOptionsFromJSON === 'function') {
+        creationOptions = pkc.parseCreationOptionsFromJSON(options);
+      } else {
+        creationOptions = {
+          publicKey: {
+            ...options,
+            challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+            user: {
+              ...options.user,
+              id: Uint8Array.from(atob(options.user.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+            },
+            excludeCredentials: (options.excludeCredentials || []).map((cred: any) => ({
+              ...cred,
+              id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+            })),
+          },
+        };
+      }
+
+      const cred = (await navigator.credentials.create({
+        publicKey: (creationOptions as any).publicKey,
+        signal: webauthnAbortRef.current.signal,
+      })) as any;
+
+      if (!cred) {
+        throw new Error('Passkey creation cancelled');
+      }
+
+      let credJson: any;
+      if (typeof cred.toJSON === 'function') {
+        credJson = cred.toJSON();
+      } else {
+        const rawIdBase64Url = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '');
+        credJson = {
+          id: cred.id,
+          rawId: rawIdBase64Url,
+          response: {
+            clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(cred.response.clientDataJSON)))
+              .replace(/\+/g, '-')
+              .replace(/\//g, '_')
+              .replace(/=+$/, ''),
+            attestationObject: btoa(String.fromCharCode(...new Uint8Array(cred.response.attestationObject)))
+              .replace(/\+/g, '-')
+              .replace(/\//g, '_')
+              .replace(/=+$/, ''),
+            transports: typeof cred.response.getTransports === 'function' ? cred.response.getTransports() : [],
+          },
+          type: cred.type,
+          authenticatorAttachment: cred.authenticatorAttachment,
+        };
+      }
+
+      const verifyRes = await apiFetch<{
+        verified: boolean;
+        passkey: PasskeyPublic;
+        can_switch_passwordless: boolean;
+        rp_id?: string;
+        user_id_base64url?: string;
+      }>('/api/auth/passkeys/register/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...credJson,
+          custom_name: passkeyCustomName.trim() || undefined,
+        }),
+      });
+
+      setPasskeyCustomName('');
+      setAccountMessage({
+        type: 'success',
+        text: `Passkey "${verifyRes.passkey.name}" registered successfully!`,
+      });
+
+      const updatedSec = await fetchAccountSecurity();
+      if (updatedSec?.rp_id && updatedSec?.user_id_base64url) {
+        await syncAcceptedCredentials(
+          updatedSec.rp_id,
+          updatedSec.user_id_base64url,
+          updatedSec.passkeys.map((p) => p.id)
+        );
+      }
+
+      if (verifyRes.can_switch_passwordless) {
+        passwordlessPromoDialogRef.current?.showModal();
+      }
+    } catch (err: unknown) {
+      if ((err as Error).name === 'AbortError') return;
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Passkey registration failed',
+      });
+    }
+  }
+
+  async function handleRenamePasskey(passkeyId: string) {
+    if (!editingPasskeyName.trim()) return;
+    try {
+      await apiFetch(`/api/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: editingPasskeyName.trim() }),
+      });
+      setEditingPasskeyId(null);
+      setEditingPasskeyName('');
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to rename passkey',
+      });
+    }
+  }
+
+  async function handleRevokePasskey(passkeyId: string) {
+    if (!window.confirm('Are you sure you want to revoke this passkey?')) return;
+    try {
+      const res = await apiFetch<{ ok: boolean; credential_ids?: string[]; rp_id?: string; user_id_base64url?: string }>(
+        `/api/auth/passkeys/${encodeURIComponent(passkeyId)}`,
+        { method: 'DELETE' }
+      );
+      if (res.rp_id && res.user_id_base64url && res.credential_ids) {
+        await syncAcceptedCredentials(res.rp_id, res.user_id_base64url, res.credential_ids);
+      }
+      setAccountMessage({ type: 'success', text: 'Passkey revoked.' });
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to revoke passkey',
+      });
+    }
+  }
+
+  async function handlePasskeySignIn() {
+    setAuthError('');
+    if (typeof window === 'undefined' || !window.PublicKeyCredential) {
+      setAuthError('Passkeys are not supported in this browser.');
+      return;
+    }
+
+    try {
+      webauthnAbortRef.current?.abort();
+      webauthnAbortRef.current = new AbortController();
+
+      const options = await apiFetch<any>('/api/auth/passkeys/login/options', {
+        method: 'POST',
+      });
+
+      let reqOptions: CredentialRequestOptions;
+      const pkc = window.PublicKeyCredential as any;
+      if (typeof pkc.parseRequestOptionsFromJSON === 'function') {
+        reqOptions = pkc.parseRequestOptionsFromJSON(options);
+      } else {
+        reqOptions = {
+          publicKey: {
+            ...options,
+            challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+            allowCredentials: (options.allowCredentials || []).map((cred: any) => ({
+              ...cred,
+              id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+            })),
+          },
+        };
+      }
+
+      const assertion = (await navigator.credentials.get({
+        publicKey: (reqOptions as any).publicKey,
+        signal: webauthnAbortRef.current.signal,
+      })) as any;
+
+      if (!assertion) {
+        throw new Error('Authentication cancelled');
+      }
+
+      let assertionJson: any;
+      if (typeof assertion.toJSON === 'function') {
+        assertionJson = assertion.toJSON();
+      } else {
+        assertionJson = {
+          id: assertion.id,
+          rawId: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId)))
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, ''),
+          response: {
+            clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON)))
+              .replace(/\+/g, '-')
+              .replace(/\//g, '_')
+              .replace(/=+$/, ''),
+            authenticatorData: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData)))
+              .replace(/\+/g, '-')
+              .replace(/\//g, '_')
+              .replace(/=+$/, ''),
+            signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature)))
+              .replace(/\+/g, '-')
+              .replace(/\//g, '_')
+              .replace(/=+$/, ''),
+            userHandle: assertion.response.userHandle
+              ? btoa(String.fromCharCode(...new Uint8Array(assertion.response.userHandle)))
+                  .replace(/\+/g, '-')
+                  .replace(/\//g, '_')
+                  .replace(/=+$/, '')
+              : undefined,
+          },
+          type: assertion.type,
+        };
+      }
+
+      const res = await apiFetch<{ user: UserPublic }>('/api/auth/passkeys/login/verify', {
+        method: 'POST',
+        body: JSON.stringify(assertionJson),
+      });
+
+      setUser(res.user);
+      authDialogRef.current?.close();
+      await refreshCloudProjectsAndSelect(true);
+      setStatusBanner({
+        type: 'success',
+        text: `Welcome back, ${res.user.display_name}! Signed in via Passkey.`,
+      });
+    } catch (err: unknown) {
+      if ((err as Error).name === 'AbortError') return;
+      const apiErr = err as Error & { status?: number };
+      if (apiErr.status === 404) {
+        if (typeof window !== 'undefined') {
+          const host = window.location.hostname || 'localhost';
+          signalUnknownCredential(host, 'unknown');
+        }
+      }
+      setAuthError(err instanceof Error ? err.message : 'Passkey sign-in failed');
+    }
+  }
+
+  async function handleRevokeOtherSessions() {
+    setAccountMessage(null);
+    try {
+      const res = await apiFetch<{ ok: boolean; revoked_count: number }>('/api/auth/sessions/revoke-others', {
+        method: 'POST',
+      });
+      setAccountMessage({
+        type: 'success',
+        text: `Logged out ${res.revoked_count} other active device(s).`,
+      });
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to revoke other sessions',
+      });
+    }
+  }
+
+  async function handleRevokeSingleSession(sessionUid: string) {
+    setAccountMessage(null);
+    try {
+      await apiFetch(`/api/auth/sessions/${sessionUid}`, { method: 'DELETE' });
+      setAccountMessage({ type: 'success', text: 'Session revoked.' });
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to revoke session',
+      });
+    }
+  }
+
+  async function handleDeleteAccount(e: React.FormEvent) {
+    e.preventDefault();
+    setAccountMessage(null);
+    if (deleteAccountConfirm.trim() !== 'DELETE') {
+      setAccountMessage({ type: 'error', text: 'Please type DELETE exactly to confirm.' });
+      return;
+    }
+    if (!window.confirm('FINAL WARNING: This will permanently delete your account, projects, parts, and all credentials. Continue?')) {
+      return;
+    }
+
+    try {
+      const res = await apiFetch<{ ok: boolean; rp_id?: string; user_id_base64url?: string }>(
+        '/api/auth/account/delete',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            confirmation: 'DELETE',
+            current_password: deleteAccountPassword || undefined,
+          }),
+        }
+      );
+
+      if (res.rp_id && res.user_id_base64url) {
+        await syncAcceptedCredentials(res.rp_id, res.user_id_base64url, []);
+      }
+
+      settingsDialogRef.current?.close();
+      await handleLogout();
+      setStatusBanner({
+        type: 'info',
+        text: 'Your PriceIt account and all associated data have been permanently deleted.',
+      });
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to delete account',
+      });
+    }
   }
 
   // Export CSV / Excel & Print PDF (Registered tier feature)
@@ -1446,9 +2081,23 @@ export function App() {
             </button>
           ) : (
             <div className="inline-flex items-center gap-1.5 h-[26px] box-border">
-              <span className="text-xs font-mono-tabular leading-[26px] inline-flex items-center" style={{ color: 'var(--text-secondary)' }}>
-                {user.display_name}
-              </span>
+              <button
+                type="button"
+                onClick={handleOpenAccountSettings}
+                className="h-[26px] px-2 text-xs font-mono-tabular border inline-flex items-center gap-1.5 cursor-pointer box-border hover:bg-[var(--bg-hover)]"
+                style={{
+                  height: '26px',
+                  boxSizing: 'border-box',
+                  backgroundColor: 'var(--bg-elevated)',
+                  borderColor: 'var(--border-subtle)',
+                  color: 'var(--text-primary)',
+                }}
+                title="Account Settings & Security"
+                aria-label="Account Settings"
+              >
+                <UserCog className="w-3.5 h-3.5 text-[var(--accent-amber)]" />
+                <span>{user.display_name}</span>
+              </button>
               <button
                 type="button"
                 onClick={handleLogout}
@@ -3376,6 +4025,7 @@ export function App() {
               <input
                 type="email"
                 required
+                autoComplete="username webauthn"
                 value={authEmail}
                 onChange={(e) => setAuthEmail(e.target.value)}
                 placeholder="engineer@workshop.io"
@@ -3410,19 +4060,35 @@ export function App() {
             >
               {authMode === 'login' ? 'Sign In & Sync Projects' : 'Create Account & Migrate'}
             </button>
+
+            {authMode === 'login' && (
+              <button
+                type="button"
+                onClick={handlePasskeySignIn}
+                className="w-full py-2 text-xs font-semibold flex items-center justify-center gap-1.5 border cursor-pointer"
+                style={{
+                  backgroundColor: 'var(--bg-elevated)',
+                  borderColor: 'var(--border-subtle)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <Key className="w-3.5 h-3.5 text-[var(--accent-amber)]" />
+                Sign In with Passkey / WebAuthn
+              </button>
+            )}
           </form>
 
           <div className="border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
             <div className="text-[11px] font-mono-tabular uppercase mb-2" style={{ color: 'var(--text-secondary)' }}>
               Or Continue with Federated OAuth Provider
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              {(['google', 'microsoft', 'reddit', 'meta'] as const).map((prov) => (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => (
                 <button
                   key={prov}
                   type="button"
                   onClick={() => handleOAuthSignIn(prov)}
-                  className="px-3 py-1.5 text-xs font-mono-tabular uppercase border cursor-pointer"
+                  className="px-3 py-1.5 text-xs font-mono-tabular uppercase border cursor-pointer hover:bg-[var(--bg-hover)]"
                   style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
                 >
                   {prov}
@@ -3811,6 +4477,712 @@ export function App() {
             </button>
           </div>
         </form>
+      </dialog>
+
+      {/* Dialog 5: Account Settings, OAuth Linking, Passkeys & Session Management */}
+      <dialog
+        ref={settingsDialogRef}
+        {...({ closedby: 'any' } as React.DialogHTMLAttributes<HTMLDialogElement>)}
+        aria-labelledby="account-settings-dialog-title"
+        className="workshop-dialog max-w-2xl w-full"
+      >
+        <div
+          className="px-4 py-3 border-b flex items-center justify-between"
+          style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+        >
+          <h2 id="account-settings-dialog-title" className="font-bold text-sm uppercase tracking-wider flex items-center gap-1.5">
+            <UserCog className="w-4 h-4 text-[var(--accent-amber)]" />
+            Account Settings & Security
+          </h2>
+          <button
+            type="button"
+            onClick={() => settingsDialogRef.current?.close()}
+            className="text-xs px-2 py-0.5 border cursor-pointer"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
+            ESC
+          </button>
+        </div>
+
+        {/* Tab Navigation */}
+        <div
+          className="flex border-b text-xs font-semibold overflow-x-auto"
+          style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+        >
+          {[
+            { id: 'profile', label: 'Profile & Email', icon: Mail },
+            { id: 'security', label: 'Password & Security', icon: Lock },
+            { id: 'oauth', label: 'OAuth Logins', icon: Key },
+            { id: 'passkeys', label: 'Passkeys', icon: Smartphone },
+            { id: 'sessions', label: 'Sessions & Danger', icon: Shield },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = settingsTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setSettingsTab(tab.id as any)}
+                className={`px-3 py-2 border-b-2 flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  isActive ? 'border-[var(--accent-amber)] text-[var(--text-primary)] font-bold' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Feedback / Error Message Strip */}
+        {accountMessage && (
+          <div
+            className="p-3 text-xs border-b font-mono-tabular"
+            style={{
+              backgroundColor:
+                accountMessage.type === 'error'
+                  ? 'var(--accent-danger-bg)'
+                  : accountMessage.type === 'success'
+                    ? 'var(--accent-emerald-bg)'
+                    : 'var(--accent-amber-bg)',
+              borderColor: 'var(--border-subtle)',
+              color:
+                accountMessage.type === 'error'
+                  ? 'var(--accent-danger)'
+                  : accountMessage.type === 'success'
+                    ? 'var(--accent-emerald)'
+                    : 'var(--accent-amber)',
+            }}
+          >
+            {accountMessage.text}
+          </div>
+        )}
+
+        <div className="p-4 max-h-[70vh] overflow-y-auto flex flex-col gap-5">
+          {/* TAB 1: Profile & Email */}
+          {settingsTab === 'profile' && (
+            <div className="flex flex-col gap-6">
+              {/* Profile Display Name */}
+              <form onSubmit={handleUpdateProfile} className="flex flex-col gap-2">
+                <h3 className="font-semibold text-xs uppercase tracking-wider text-[var(--text-secondary)]">
+                  Public Profile
+                </h3>
+                <div>
+                  <label className="block text-xs font-mono-tabular uppercase mb-1">Display Name</label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={100}
+                    value={profileDisplayName}
+                    onChange={(e) => setProfileDisplayName(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs border"
+                    style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                  />
+                </div>
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="submit"
+                    className="px-3 py-1.5 text-xs font-semibold border cursor-pointer"
+                    style={{
+                      backgroundColor: 'var(--accent-amber-bg)',
+                      borderColor: 'var(--accent-amber)',
+                      color: 'var(--accent-amber)',
+                    }}
+                  >
+                    Save Display Name
+                  </button>
+                </div>
+              </form>
+
+              {/* Change Email */}
+              <div className="border-t pt-4 flex flex-col gap-3" style={{ borderColor: 'var(--border-subtle)' }}>
+                <h3 className="font-semibold text-xs uppercase tracking-wider text-[var(--text-secondary)]">
+                  Email Address & Verification
+                </h3>
+                <div className="text-xs">
+                  <span className="text-[var(--text-secondary)]">Current Email: </span>
+                  <span className="font-mono-tabular font-bold">{user?.email || 'N/A'}</span>
+                </div>
+
+                {accountSecurity?.pending_email && (
+                  <div
+                    className="p-2.5 border text-xs font-mono-tabular"
+                    style={{
+                      backgroundColor: 'var(--accent-amber-bg)',
+                      borderColor: 'var(--accent-amber)',
+                      color: 'var(--accent-amber)',
+                    }}
+                  >
+                    ⏳ Pending verification email sent to: <strong>{accountSecurity.pending_email}</strong>. Check your inbox or paste the token below to confirm.
+                  </div>
+                )}
+
+                <form onSubmit={handleRequestEmailChange} className="flex flex-col gap-2">
+                  <div>
+                    <label className="block text-xs font-mono-tabular uppercase mb-1">New Email Address</label>
+                    <input
+                      type="email"
+                      required
+                      value={newEmailInput}
+                      onChange={(e) => setNewEmailInput(e.target.value)}
+                      placeholder="new.email@domain.com"
+                      className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                      style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                    />
+                  </div>
+
+                  {accountSecurity?.has_password && (
+                    <div>
+                      <label className="block text-xs font-mono-tabular uppercase mb-1">Current Password (Required for verification)</label>
+                      <input
+                        type="password"
+                        required
+                        value={emailCurrentPassword}
+                        onChange={(e) => setEmailCurrentPassword(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                        style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                      />
+                    </div>
+                  )}
+
+                  {accountSecurity?.is_passwordless && (
+                    <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      Note: As a passwordless account, requesting an email change requires recent passkey re-authentication.
+                    </div>
+                  )}
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 text-xs font-semibold border cursor-pointer"
+                      style={{
+                        backgroundColor: 'var(--bg-elevated)',
+                        borderColor: 'var(--border-subtle)',
+                        color: 'var(--text-primary)',
+                      }}
+                    >
+                      Send Verification Token
+                    </button>
+                  </div>
+                </form>
+
+                {/* Confirm Token Form */}
+                <form onSubmit={handleVerifyEmailToken} className="mt-2 p-3 border flex flex-col gap-2" style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+                  <label className="block text-xs font-mono-tabular uppercase font-semibold">
+                    Confirm Email Verification Token
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Paste 43-character token from verification email"
+                      value={verifyEmailTokenInput}
+                      onChange={(e) => setVerifyEmailTokenInput(e.target.value)}
+                      className="flex-1 px-2.5 py-1.5 text-xs font-mono-tabular border"
+                      style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                    />
+                    <button
+                      type="submit"
+                      className="px-4 py-1.5 text-xs font-semibold border cursor-pointer shrink-0"
+                      style={{
+                        backgroundColor: 'var(--accent-emerald-bg)',
+                        borderColor: 'var(--accent-emerald)',
+                        color: 'var(--accent-emerald)',
+                      }}
+                    >
+                      Verify & Activate
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: Password & Security */}
+          {settingsTab === 'security' && (
+            <div className="flex flex-col gap-4">
+              {accountSecurity?.is_passwordless ? (
+                <div
+                  className="p-4 border flex items-start gap-3"
+                  style={{
+                    backgroundColor: 'var(--accent-emerald-bg)',
+                    borderColor: 'var(--accent-emerald)',
+                    color: 'var(--accent-emerald)',
+                  }}
+                >
+                  <Shield className="w-5 h-5 shrink-0 mt-0.5" />
+                  <div className="text-xs">
+                    <strong className="block text-sm font-semibold mb-1">✓ 100% Passwordless Account</strong>
+                    Your account is permanently passwordless! It is secured exclusively by hardware/biometric Passkeys and connected OAuth providers. There is no password stored on the server that can be leaked, phished, or brute-forced.
+                  </div>
+                </div>
+              ) : (
+                <form onSubmit={handleChangePassword} className="flex flex-col gap-3">
+                  <h3 className="font-semibold text-xs uppercase tracking-wider text-[var(--text-secondary)]">
+                    Change Password
+                  </h3>
+                  <div>
+                    <label className="block text-xs font-mono-tabular uppercase mb-1">Current Password</label>
+                    <input
+                      type="password"
+                      required
+                      value={changePassCurrent}
+                      onChange={(e) => setChangePassCurrent(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                      style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-mono-tabular uppercase mb-1">New Password (min 8 chars)</label>
+                    <input
+                      type="password"
+                      required
+                      minLength={8}
+                      value={changePassNew}
+                      onChange={(e) => setChangePassNew(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                      style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-mono-tabular uppercase mb-1">Confirm New Password</label>
+                    <input
+                      type="password"
+                      required
+                      minLength={8}
+                      value={changePassConfirm}
+                      onChange={(e) => setChangePassConfirm(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                      style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                    />
+                  </div>
+
+                  <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    🔒 Security Invariant: Changing your password will automatically sign out all other active devices and sessions.
+                  </div>
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="submit"
+                      className="px-4 py-1.5 text-xs font-semibold border cursor-pointer"
+                      style={{
+                        backgroundColor: 'var(--accent-amber-bg)',
+                        borderColor: 'var(--accent-amber)',
+                        color: 'var(--accent-amber)',
+                      }}
+                    >
+                      Update Password
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
+
+          {/* TAB 3: Connected OAuth Logins */}
+          {settingsTab === 'oauth' && (
+            <div className="flex flex-col gap-4">
+              <div>
+                <h3 className="font-semibold text-xs uppercase tracking-wider text-[var(--text-secondary)] mb-1">
+                  Connected Social & Enterprise Logins
+                </h3>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  Link external identity providers to sign in with one click without needing a password.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2">
+                {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => {
+                  const linked = accountSecurity?.oauth_accounts.find((a) => a.provider === prov);
+                  return (
+                    <div
+                      key={prov}
+                      className="p-3 border flex items-center justify-between gap-3"
+                      style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Key className="w-4 h-4 text-[var(--accent-amber)]" />
+                        <div>
+                          <div className="font-semibold text-xs capitalize">{prov}</div>
+                          {linked ? (
+                            <div className="text-[11px] font-mono-tabular" style={{ color: 'var(--accent-emerald)' }}>
+                              ✓ Linked ({linked.email || linked.provider_account_id})
+                            </div>
+                          ) : (
+                            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                              Not connected
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {linked ? (
+                        <button
+                          type="button"
+                          onClick={() => handleUnlinkOAuth(prov)}
+                          className="px-2.5 py-1 text-xs border cursor-pointer hover:bg-[var(--accent-danger-bg)]"
+                          style={{
+                            borderColor: 'var(--border-subtle)',
+                            color: 'var(--accent-danger)',
+                          }}
+                        >
+                          Disconnect
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleLinkOAuth(prov)}
+                          className="px-3 py-1 text-xs font-semibold border cursor-pointer"
+                          style={{
+                            backgroundColor: 'var(--bg-surface)',
+                            borderColor: 'var(--border-strong)',
+                            color: 'var(--text-primary)',
+                          }}
+                        >
+                          Connect {prov}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {accountSecurity?.has_password &&
+                ((accountSecurity.oauth_accounts && accountSecurity.oauth_accounts.length > 0) ||
+                  (accountSecurity.passkeys && accountSecurity.passkeys.length > 0)) && (
+                  <div className="p-3 border mt-2 flex items-center justify-between gap-3" style={{ backgroundColor: 'var(--accent-amber-bg)', borderColor: 'var(--accent-amber)' }}>
+                    <div className="text-xs">
+                      <strong>Ready for Passwordless?</strong> You have alternate sign-in methods configured. You can eliminate your password entirely.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRemovePassword}
+                      className="px-3 py-1.5 text-xs font-bold border cursor-pointer shrink-0"
+                      style={{
+                        backgroundColor: 'var(--bg-surface)',
+                        borderColor: 'var(--accent-amber)',
+                        color: 'var(--accent-amber)',
+                      }}
+                    >
+                      Switch to Passwordless
+                    </button>
+                  </div>
+                )}
+            </div>
+          )}
+
+          {/* TAB 4: Passkeys */}
+          {settingsTab === 'passkeys' && (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-xs uppercase tracking-wider text-[var(--text-secondary)]">
+                    Hardware & Biometric Passkeys (FIDO2 / WebAuthn)
+                  </h3>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    Sign in instantly using Touch ID, Face ID, Windows Hello, or YubiKey.
+                  </p>
+                </div>
+              </div>
+
+              {/* Add Passkey Bar */}
+              <div className="p-3 border flex flex-col sm:flex-row gap-2 items-center" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                <input
+                  type="text"
+                  placeholder="Passkey nickname (e.g. MacBook Touch ID, Work YubiKey)"
+                  value={passkeyCustomName}
+                  onChange={(e) => setPasskeyCustomName(e.target.value)}
+                  className="w-full sm:flex-1 px-2.5 py-1.5 text-xs border"
+                  style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+                />
+                <button
+                  type="button"
+                  onClick={handleAddPasskey}
+                  className="w-full sm:w-auto px-4 py-1.5 text-xs font-semibold border cursor-pointer shrink-0 flex items-center justify-center gap-1.5"
+                  style={{
+                    backgroundColor: 'var(--accent-emerald-bg)',
+                    borderColor: 'var(--accent-emerald)',
+                    color: 'var(--accent-emerald)',
+                  }}
+                >
+                  <Plus className="w-3.5 h-3.5" /> Register New Passkey
+                </button>
+              </div>
+
+              {/* Passkey List */}
+              <div className="flex flex-col gap-2">
+                {!accountSecurity?.passkeys || accountSecurity.passkeys.length === 0 ? (
+                  <div className="p-4 border text-center text-xs" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
+                    No passkeys registered yet. Click &quot;Register New Passkey&quot; above to add one.
+                  </div>
+                ) : (
+                  accountSecurity.passkeys.map((pk) => (
+                    <div
+                      key={pk.id}
+                      className="p-3 border flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                      style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Smartphone className="w-4 h-4 text-[var(--accent-emerald)] shrink-0" />
+                        <div>
+                          {editingPasskeyId === pk.id ? (
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                value={editingPasskeyName}
+                                onChange={(e) => setEditingPasskeyName(e.target.value)}
+                                className="px-1.5 py-0.5 text-xs border font-mono-tabular"
+                                style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-strong)' }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleRenamePasskey(pk.id)}
+                                className="px-2 py-0.5 text-xs border font-semibold cursor-pointer"
+                                style={{ borderColor: 'var(--border-subtle)' }}
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingPasskeyId(null)}
+                                className="px-1.5 py-0.5 text-xs cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="font-semibold text-xs flex items-center gap-1.5">
+                              <span>{pk.name}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingPasskeyId(pk.id);
+                                  setEditingPasskeyName(pk.name);
+                                }}
+                                className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer underline"
+                              >
+                                Rename
+                              </button>
+                            </div>
+                          )}
+                          <div className="text-[10px] font-mono-tabular mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                            Added: {new Date(pk.registered_at).toLocaleDateString()}
+                            {pk.last_used_at ? ` • Last used: ${new Date(pk.last_used_at).toLocaleDateString()}` : ' • Never used'}
+                            {pk.backed_up ? ' • Synced Cloud Vault' : ' • Hardware Bound'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleRevokePasskey(pk.id)}
+                        className="px-2.5 py-1 text-xs border cursor-pointer self-end sm:self-auto hover:bg-[var(--accent-danger-bg)]"
+                        style={{ borderColor: 'var(--border-subtle)', color: 'var(--accent-danger)' }}
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: Sessions & Danger */}
+          {settingsTab === 'sessions' && (
+            <div className="flex flex-col gap-6">
+              {/* Active Sessions */}
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold text-xs uppercase tracking-wider text-[var(--text-secondary)]">
+                      Active Devices & Sessions
+                    </h3>
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Manage authenticated browser sessions across your devices.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRevokeOtherSessions}
+                    className="px-3 py-1.5 text-xs font-semibold border cursor-pointer shrink-0"
+                    style={{
+                      backgroundColor: 'var(--bg-elevated)',
+                      borderColor: 'var(--border-subtle)',
+                      color: 'var(--text-primary)',
+                    }}
+                  >
+                    Log Out All Other Devices
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  {accountSecurity?.sessions.map((sess) => (
+                    <div
+                      key={sess.session_uid}
+                      className="p-3 border flex items-center justify-between gap-2"
+                      style={{
+                        backgroundColor: sess.is_current ? 'var(--bg-elevated)' : 'var(--bg-surface)',
+                        borderColor: sess.is_current ? 'var(--accent-amber)' : 'var(--border-subtle)',
+                      }}
+                    >
+                      <div className="text-xs">
+                        <div className="flex items-center gap-1.5 font-semibold">
+                          <span>{sess.user_agent.slice(0, 60)}</span>
+                          {sess.is_current && (
+                            <span className="text-[10px] px-1.5 py-0.2 border bg-[var(--accent-amber-bg)] text-[var(--accent-amber)] font-mono-tabular">
+                              CURRENT DEVICE
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] font-mono-tabular mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                          IP: {sess.ip_address} • Last Active: {new Date(sess.last_active_at).toLocaleString()}
+                        </div>
+                      </div>
+
+                      {!sess.is_current && (
+                        <button
+                          type="button"
+                          onClick={() => handleRevokeSingleSession(sess.session_uid)}
+                          className="px-2 py-0.5 text-xs border cursor-pointer hover:bg-[var(--accent-danger-bg)] text-[var(--accent-danger)]"
+                          style={{ borderColor: 'var(--border-subtle)' }}
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Danger Zone */}
+              <div className="border border-[var(--accent-danger)] p-4 flex flex-col gap-3" style={{ backgroundColor: 'var(--accent-danger-bg)' }}>
+                <h3 className="font-bold text-xs uppercase tracking-wider text-[var(--accent-danger)] flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4" /> Danger Zone: Delete Account
+                </h3>
+                <p className="text-xs" style={{ color: 'var(--text-primary)' }}>
+                  Permanently delete your user profile, all cloud projects, BOM data, offering records, and passkey credentials. This action cannot be reversed.
+                </p>
+
+                <form onSubmit={handleDeleteAccount} className="flex flex-col gap-2 pt-1">
+                  <div>
+                    <label className="block text-[11px] font-mono-tabular uppercase mb-1">
+                      Type <strong>DELETE</strong> to confirm:
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={deleteAccountConfirm}
+                      onChange={(e) => setDeleteAccountConfirm(e.target.value)}
+                      placeholder="DELETE"
+                      className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                      style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--accent-danger)' }}
+                    />
+                  </div>
+
+                  {accountSecurity?.has_password && (
+                    <div>
+                      <label className="block text-[11px] font-mono-tabular uppercase mb-1">
+                        Current Password (Required)
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        value={deleteAccountPassword}
+                        onChange={(e) => setDeleteAccountPassword(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="submit"
+                      disabled={deleteAccountConfirm.trim() !== 'DELETE'}
+                      className="px-4 py-1.5 text-xs font-bold uppercase border cursor-pointer disabled:opacity-50"
+                      style={{
+                        backgroundColor: 'var(--accent-danger)',
+                        borderColor: 'var(--accent-danger)',
+                        color: '#ffffff',
+                      }}
+                    >
+                      Permanently Delete Account
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+      </dialog>
+
+      {/* Dialog 6: Passwordless Account Conversion Promo Modal */}
+      <dialog
+        ref={passwordlessPromoDialogRef}
+        {...({ closedby: 'any' } as React.DialogHTMLAttributes<HTMLDialogElement>)}
+        aria-labelledby="passwordless-promo-title"
+        className="workshop-dialog max-w-md w-full"
+      >
+        <div
+          className="px-4 py-3 border-b flex items-center justify-between"
+          style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+        >
+          <h2 id="passwordless-promo-title" className="font-bold text-sm uppercase tracking-wider flex items-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-[var(--accent-amber)]" />
+            Switch to 100% Passwordless?
+          </h2>
+          <button
+            type="button"
+            onClick={() => passwordlessPromoDialogRef.current?.close()}
+            className="text-xs px-2 py-0.5 border cursor-pointer"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
+            ESC
+          </button>
+        </div>
+
+        <div className="p-4 flex flex-col gap-4 text-xs">
+          <div className="p-3 border leading-relaxed" style={{ backgroundColor: 'var(--accent-emerald-bg)', borderColor: 'var(--accent-emerald)', color: 'var(--accent-emerald)' }}>
+            🎉 <strong>Your Passkey is registered!</strong> You can now eliminate your password entirely and convert to a permanent passwordless account.
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="font-semibold uppercase tracking-wider text-[11px] text-[var(--text-secondary)]">
+              Why Go Passwordless:
+            </div>
+            <ul className="list-disc pl-4 flex flex-col gap-1 text-[var(--text-primary)]">
+              <li><strong>Zero phishable credentials</strong>: Passkeys use public-key cryptography bound to this site domain.</li>
+              <li><strong>Instant biometric access</strong>: Log in with Touch ID, Face ID, or Windows Hello in under a second.</li>
+              <li><strong>Server database security</strong>: No password hash exists on the server to leak or brute-force.</li>
+            </ul>
+          </div>
+
+          <div className="pt-2 flex justify-end gap-2 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+            <button
+              type="button"
+              onClick={() => passwordlessPromoDialogRef.current?.close()}
+              className="px-3 py-1.5 text-xs border cursor-pointer"
+              style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+            >
+              Keep Password for Now
+            </button>
+            <button
+              type="button"
+              onClick={handleRemovePassword}
+              className="px-4 py-1.5 text-xs font-bold border cursor-pointer"
+              style={{
+                backgroundColor: 'var(--accent-emerald-bg)',
+                borderColor: 'var(--accent-emerald)',
+                color: 'var(--accent-emerald)',
+              }}
+            >
+              Switch to Passwordless Now
+            </button>
+          </div>
+        </div>
       </dialog>
     </div>
   );

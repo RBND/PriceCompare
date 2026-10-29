@@ -89,6 +89,17 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
 
     // Top-bar buttons with uniform 26px height
     expect(html).toContain('style="height:26px;width:28px;box-sizing:border-box;');
+
+    // Account Settings Modal and Passwordless Promo Modal dialogs
+    expect(html).toContain('id="account-settings-dialog-title"');
+    expect(html).toContain('Account Settings &amp; Security');
+    expect(html).toContain('Profile &amp; Email');
+    expect(html).toContain('Password &amp; Security');
+    expect(html).toContain('OAuth Logins');
+    expect(html).toContain('Passkeys');
+    expect(html).toContain('Sessions &amp; Danger');
+    expect(html).toContain('id="passwordless-promo-title"');
+    expect(html).toContain('Switch to 100% Passwordless?');
   });
 
   it('configures @media print datasheet rules so both BOM (Tab 1) and Optimal Plan (Tab 3) print regardless of active tab', () => {

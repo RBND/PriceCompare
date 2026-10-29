@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
+import nodemailer from 'nodemailer';
 import type { Request, Response, NextFunction } from 'express';
 import type Database from 'better-sqlite3';
 import type { UserPublic } from '../shared/types.js';
@@ -155,6 +156,83 @@ export class AuthRateLimiter {
   }
 }
 
+export function getCurrentSessionHash(req: Request): string | null {
+  const token = req.cookies?.[SESSION_COOKIE_NAME];
+  if (!token || typeof token !== 'string') return null;
+  return hashSessionToken(token);
+}
+
+export function countUserLoginMethods(
+  db: Database.Database,
+  userId: string
+): {
+  hasPassword: boolean;
+  passkeyCount: number;
+  oauthCount: number;
+  total: number;
+} {
+  const userRow = db
+    .prepare(`SELECT password_hash FROM users WHERE id = ?`)
+    .get(userId) as { password_hash: string | null } | undefined;
+  const hasPassword = Boolean(userRow && userRow.password_hash !== null);
+  const passkeyCount = (
+    db.prepare(`SELECT COUNT(*) as cnt FROM passkeys WHERE user_id = ?`).get(userId) as { cnt: number }
+  ).cnt;
+  const oauthCount = (
+    db.prepare(`SELECT COUNT(*) as cnt FROM oauth_accounts WHERE user_id = ?`).get(userId) as { cnt: number }
+  ).cnt;
+  return {
+    hasPassword,
+    passkeyCount,
+    oauthCount,
+    total: (hasPassword ? 1 : 0) + passkeyCount + oauthCount,
+  };
+}
+
+export async function sendVerificationEmail(
+  newEmail: string,
+  token: string
+): Promise<{ sent: boolean; dev_token?: string }> {
+  const sanitizedEmail = newEmail.replace(/[\r\n]/g, '').trim();
+  const smtpHost = process.env.SMTP_HOST;
+
+  if (smtpHost) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: parseInt(process.env.SMTP_PORT || '587', 10),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER || '',
+          pass: process.env.SMTP_PASS || '',
+        },
+        connectionTimeout: 5000,
+        greetingTimeout: 5000,
+        socketTimeout: 8000,
+      });
+
+      const verifyUrl = `${process.env.APP_ORIGIN || 'https://priceit.rbnd.cc'}/?verify_email=${encodeURIComponent(token)}`;
+
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM || '"PriceIt Security" <no-reply@priceit.rbnd.cc>',
+        to: sanitizedEmail,
+        subject: 'Confirm your new PriceIt account email',
+        text: `Hello,\n\nPlease confirm your new email address by using this verification token:\n${token}\n\nOr click here: ${verifyUrl}\n\nThis token expires in 30 minutes.\nIf you did not request this, please review your account settings immediately.`,
+      });
+      return { sent: true };
+    } catch (err) {
+      console.error('[PriceIt SMTP Error]', err);
+    }
+  }
+
+  // Fallback dev console logger when SMTP is not configured
+  console.log(`[PriceIt Mailer] Verification token for ${sanitizedEmail}: ${token}`);
+  return {
+    sent: true,
+    dev_token: process.env.NODE_ENV === 'production' ? undefined : token,
+  };
+}
+
 export function getAuthenticatedUser(db: Database.Database, req: Request): UserPublic | null {
   const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token || typeof token !== 'string') return null;
@@ -164,13 +242,24 @@ export function getAuthenticatedUser(db: Database.Database, req: Request): UserP
 
   const row = db
     .prepare(
-      `SELECT u.id, u.email, u.display_name, u.email_verified, s.expires_at
+      `SELECT u.id, u.email, u.display_name, u.email_verified, u.password_hash, u.is_passwordless,
+              s.expires_at, s.last_active_at, s.reauthenticated_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.id = ?`
     )
     .get(sessionHash) as
-    | { id: string; email: string; display_name: string | null; email_verified: number; expires_at: number }
+    | {
+        id: string;
+        email: string;
+        display_name: string | null;
+        email_verified: number;
+        password_hash: string | null;
+        is_passwordless: number;
+        expires_at: number;
+        last_active_at: number | null;
+        reauthenticated_at: number | null;
+      }
     | undefined;
 
   if (!row) return null;
@@ -179,10 +268,19 @@ export function getAuthenticatedUser(db: Database.Database, req: Request): UserP
     return null;
   }
 
+  // Throttled last_active_at update (at most once every 5 minutes per session)
+  if (!row.last_active_at || now - row.last_active_at > 5 * 60 * 1000) {
+    try {
+      db.prepare(`UPDATE sessions SET last_active_at = ? WHERE id = ?`).run(now, sessionHash);
+    } catch {}
+  }
+
   return {
     id: row.id,
     email: row.email,
     display_name: row.display_name || row.email.split('@')[0],
     email_verified: Boolean(row.email_verified),
+    has_password: row.password_hash !== null,
+    is_passwordless: Boolean(row.is_passwordless || row.password_hash === null),
   };
 }
