@@ -280,9 +280,21 @@ export function getAuthenticatedUser(db: Database.Database, req: Request): UserP
   }
 
   // Throttled last_active_at update (at most once every 5 minutes per session)
+  const rawClientIp = req
+    ? req.headers['cf-connecting-ip'] ||
+      req.headers['x-real-ip'] ||
+      (typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'].split(',')[0].trim() : null) ||
+      req.ip
+    : null;
+  const clientIp = typeof rawClientIp === 'string' ? rawClientIp.trim().slice(0, 100) : null;
+
   if (!row.last_active_at || now - row.last_active_at > 5 * 60 * 1000) {
     try {
-      db.prepare(`UPDATE sessions SET last_active_at = ? WHERE id = ?`).run(now, sessionHash);
+      if (clientIp && clientIp !== '127.0.0.1') {
+        db.prepare(`UPDATE sessions SET last_active_at = ?, ip_address = ? WHERE id = ?`).run(now, clientIp, sessionHash);
+      } else {
+        db.prepare(`UPDATE sessions SET last_active_at = ? WHERE id = ?`).run(now, sessionHash);
+      }
     } catch {}
   }
 

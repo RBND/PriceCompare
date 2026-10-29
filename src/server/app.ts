@@ -57,10 +57,27 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
   const app = express();
 
   // Security Controls & Hardening Checklist (Section 7.6)
-  app.set('trust proxy', 1);
+  app.set('trust proxy', true);
   app.disable('x-powered-by');
   app.use(express.json({ limit: '256kb' }));
   app.use(cookieParser());
+
+  function getClientIp(req?: express.Request): string {
+    if (!req) return '127.0.0.1';
+    const cfIp = req.headers['cf-connecting-ip'];
+    if (cfIp && typeof cfIp === 'string') {
+      return cfIp.trim().slice(0, 100);
+    }
+    const realIp = req.headers['x-real-ip'];
+    if (realIp && typeof realIp === 'string') {
+      return realIp.trim().slice(0, 100);
+    }
+    const forwarded = req.headers['x-forwarded-for'];
+    if (forwarded && typeof forwarded === 'string') {
+      return forwarded.split(',')[0].trim().slice(0, 100);
+    }
+    return (req.ip || '127.0.0.1').slice(0, 100);
+  }
 
   // Security headers
   app.use((_req, res, next) => {
@@ -87,7 +104,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const tokenHash = hashSessionToken(rawToken);
     const now = Date.now();
     const sessionUid = crypto.randomUUID();
-    const ip = req ? (req.ip || '127.0.0.1').slice(0, 100) : '127.0.0.1';
+    const ip = getClientIp(req);
     const userAgent = req ? String(req.headers['user-agent'] || 'Browser').slice(0, 255) : 'Browser';
 
     db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).run(now);
@@ -120,7 +137,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
     const { email, password, display_name, guest_migration } = parsed.data;
     const normalizedEmail = email.toLowerCase();
-    const ip = req.ip || '127.0.0.1';
+    const ip = getClientIp(req);
 
     const rate = rateLimiter.check(ip, normalizedEmail);
     if (!rate.allowed) {
@@ -182,7 +199,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
     const { email, password, guest_migration } = parsed.data;
     const normalizedEmail = email.toLowerCase();
-    const ip = req.ip || '127.0.0.1';
+    const ip = getClientIp(req);
 
     const rate = rateLimiter.check(ip, normalizedEmail);
     if (!rate.allowed) {
@@ -256,7 +273,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
     const { provider, provider_account_id, email, display_name, guest_migration } = parsed.data;
     const normalizedEmail = email.toLowerCase();
-    const ip = req.ip || '127.0.0.1';
+    const ip = getClientIp(req);
 
     const rate = rateLimiter.check(ip, normalizedEmail);
     if (!rate.allowed) {
