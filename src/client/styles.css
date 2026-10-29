@@ -8,6 +8,8 @@
   --bg-surface: light-dark(#ffffff, #181a1d);
   --bg-elevated: light-dark(#ebebea, #202327);
   --bg-hover: light-dark(#e4e4e2, #272b30);
+  --bg-panel: light-dark(#ffffff, #181a1d);
+  --bg-base: light-dark(#f4f4f2, #131518);
 
   --border-subtle: light-dark(#d4d4d0, #2b2f36);
   --border-strong: light-dark(#a1a19a, #404650);
@@ -23,6 +25,8 @@
   --accent-emerald-bg: light-dark(#d1fae5, #063729);
   --accent-danger: light-dark(#b91c1c, #ef4444);
   --accent-danger-bg: light-dark(#fee2e2, #3b1212);
+  --accent-sky: light-dark(#0284c7, #38bdf8);
+  --accent-sky-bg: light-dark(#e0f2fe, #0c2d48);
 
   accent-color: var(--accent-amber);
 
@@ -182,11 +186,9 @@ body {
 /* Native Modal Dialog Styling (per modern-web-guidance: light-dismiss-a-dialog) */
 dialog.workshop-dialog {
   position: fixed !important;
-  top: 50% !important;
-  left: 50% !important;
-  transform: translate(-50%, -50%) !important;
-  margin: 0 !important;
-  inset: auto !important;
+  inset: 0 !important;
+  margin: auto !important;
+  transform: none !important;
   background: var(--bg-surface);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
@@ -195,8 +197,12 @@ dialog.workshop-dialog {
   max-width: 840px;
   max-height: calc(100vh - 4rem);
   overflow-y: auto;
-  box-shadow: 0 25px 45px -5px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 25px 45px -5px rgba(0, 0, 0, 0.6);
   border-radius: 4px;
+}
+
+dialog.workshop-dialog:not([open]) {
+  display: none !important;
 }
 
 dialog.workshop-dialog.modal-sm {
@@ -215,7 +221,7 @@ dialog.workshop-dialog.modal-lg {
 }
 
 dialog.workshop-dialog::backdrop {
-  background-color: rgba(0, 0, 0, 0.55);
+  background-color: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(2px);
 }
 

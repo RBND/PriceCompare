@@ -44,21 +44,25 @@ export function BookmarkletModal({ isOpen, onClose, installKey }: BookmarkletMod
       }}
     >
       <div
-        className="w-full max-w-lg bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded-lg shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
+        className="w-full max-w-lg border rounded-lg shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
+        style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)]">
+        <div
+          className="flex items-center justify-between px-5 py-3.5 border-b"
+          style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+        >
           <div className="flex items-center gap-2">
             <Bookmark className="w-4 h-4 text-[var(--accent-amber)]" />
-            <h2 className="text-sm font-semibold tracking-wide uppercase font-mono-tabular">
+            <h2 className="text-sm font-semibold tracking-wide uppercase font-mono-tabular text-[var(--text-primary)]">
               PriceIt Capture Bookmarklet
             </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-xs px-2 py-1 border border-[var(--border-subtle)] hover:bg-[var(--bg-hover)] cursor-pointer"
+            className="text-xs px-2.5 py-1 border hover:bg-[var(--bg-hover)] cursor-pointer rounded"
+            style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)' }}
           >
             ✕ Esc
           </button>

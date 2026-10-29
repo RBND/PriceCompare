@@ -99,11 +99,14 @@ export function BookmarkletConfirmationModal({
       }}
     >
       <div
-        className="w-full max-w-lg bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded-lg shadow-2xl overflow-hidden"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
+        className="w-full max-w-lg border rounded-lg shadow-2xl overflow-hidden"
+        style={{ borderColor: 'var(--border-subtle)', backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)]">
+        <div
+          className="flex items-center justify-between px-5 py-3.5 border-b"
+          style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+        >
           <div>
             <span className="font-mono-tabular text-[10px] uppercase tracking-wider text-[var(--accent-sky)] block">
               PRICEIT CAPTURE // {incoming.vendorHost || 'RETAILER'}
@@ -112,7 +115,10 @@ export function BookmarkletConfirmationModal({
               Confirm Part &amp; BOM Mapping
             </h2>
           </div>
-          <span className="text-[10px] font-mono-tabular bg-[var(--bg-base)] text-[var(--text-muted)] px-2 py-0.5 rounded border border-[var(--border-subtle)]">
+          <span
+            className="text-[10px] font-mono-tabular px-2 py-0.5 rounded border"
+            style={{ backgroundColor: 'var(--bg-base)', borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
+          >
             Enter ↵ to Save
           </span>
         </div>
@@ -170,7 +176,7 @@ export function BookmarkletConfirmationModal({
                 <select
                   value={targetBomPartId}
                   onChange={(e) => setTargetBomPartId(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--text-primary)] rounded font-sans text-xs"
+                  className="w-full px-2.5 py-1.5 border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-primary)] rounded font-sans text-xs"
                 >
                   {existingBomParts.map((p) => (
                     <option key={p.id} value={p.id}>

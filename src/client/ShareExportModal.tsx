@@ -127,76 +127,105 @@ export function ShareExportModal({
       }}
     >
       <div
-        className="w-full max-w-2xl bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded-lg shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
+        className="w-full max-w-2xl border rounded-lg shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
+        style={{
+          borderColor: 'var(--border-subtle)',
+          backgroundColor: 'var(--bg-surface)',
+          color: 'var(--text-primary)',
+        }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)]">
+        <div
+          className="flex items-center justify-between px-5 py-3.5 border-b"
+          style={{
+            backgroundColor: 'var(--bg-elevated)',
+            borderColor: 'var(--border-subtle)',
+            color: 'var(--text-primary)',
+          }}
+        >
           <div className="flex items-center gap-2">
             <Share2 className="w-4 h-4 text-[var(--accent-sky)]" />
-            <h2 className="text-sm font-semibold tracking-wide uppercase font-mono-tabular">
+            <h2 className="text-sm font-semibold tracking-wide uppercase font-mono-tabular text-[var(--text-primary)]">
               Share / Export Hub
             </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-xs px-2 py-1 border border-[var(--border-subtle)] hover:bg-[var(--bg-hover)] cursor-pointer"
+            className="text-xs px-2.5 py-1 border hover:bg-[var(--bg-hover)] cursor-pointer rounded"
+            style={{
+              borderColor: 'var(--border-subtle)',
+              backgroundColor: 'var(--bg-surface)',
+              color: 'var(--text-primary)',
+            }}
           >
             ✕ Esc
           </button>
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex border-b border-[var(--border-subtle)] bg-[var(--bg-base)] text-xs">
+        <div
+          className="flex border-b text-xs"
+          style={{
+            backgroundColor: 'var(--bg-elevated)',
+            borderColor: 'var(--border-subtle)',
+          }}
+        >
           <button
             type="button"
             onClick={() => setActiveTab('share')}
-            className={`flex-1 py-2.5 px-3 flex items-center justify-center gap-1.5 font-medium border-b-2 transition-colors cursor-pointer ${
-              activeTab === 'share'
-                ? 'border-[var(--accent-sky)] text-[var(--accent-sky)] bg-[var(--bg-panel)]'
-                : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            }`}
+            className="flex-1 py-2.5 px-3 flex items-center justify-center gap-1.5 font-medium border-b-2 transition-colors cursor-pointer"
+            style={{
+              borderColor: activeTab === 'share' ? 'var(--accent-sky)' : 'transparent',
+              color: activeTab === 'share' ? 'var(--accent-sky)' : 'var(--text-secondary)',
+              backgroundColor: activeTab === 'share' ? 'var(--bg-surface)' : 'transparent',
+            }}
           >
             <Share2 className="w-3.5 h-3.5" /> Share Link
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('copy')}
-            className={`flex-1 py-2.5 px-3 flex items-center justify-center gap-1.5 font-medium border-b-2 transition-colors cursor-pointer ${
-              activeTab === 'copy'
-                ? 'border-[var(--accent-sky)] text-[var(--accent-sky)] bg-[var(--bg-panel)]'
-                : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            }`}
+            className="flex-1 py-2.5 px-3 flex items-center justify-center gap-1.5 font-medium border-b-2 transition-colors cursor-pointer"
+            style={{
+              borderColor: activeTab === 'copy' ? 'var(--accent-sky)' : 'transparent',
+              color: activeTab === 'copy' ? 'var(--accent-sky)' : 'var(--text-secondary)',
+              backgroundColor: activeTab === 'copy' ? 'var(--bg-surface)' : 'transparent',
+            }}
           >
             <Code className="w-3.5 h-3.5" /> Copy Markdown / Reddit
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('pdf')}
-            className={`flex-1 py-2.5 px-3 flex items-center justify-center gap-1.5 font-medium border-b-2 transition-colors cursor-pointer ${
-              activeTab === 'pdf'
-                ? 'border-[var(--accent-sky)] text-[var(--accent-sky)] bg-[var(--bg-panel)]'
-                : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            }`}
+            className="flex-1 py-2.5 px-3 flex items-center justify-center gap-1.5 font-medium border-b-2 transition-colors cursor-pointer"
+            style={{
+              borderColor: activeTab === 'pdf' ? 'var(--accent-sky)' : 'transparent',
+              color: activeTab === 'pdf' ? 'var(--accent-sky)' : 'var(--text-secondary)',
+              backgroundColor: activeTab === 'pdf' ? 'var(--bg-surface)' : 'transparent',
+            }}
           >
             <Printer className="w-3.5 h-3.5" /> Print PDF {!user && <Lock className="w-3 h-3 text-[var(--accent-amber)]" />}
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('csv')}
-            className={`flex-1 py-2.5 px-3 flex items-center justify-center gap-1.5 font-medium border-b-2 transition-colors cursor-pointer ${
-              activeTab === 'csv'
-                ? 'border-[var(--accent-sky)] text-[var(--accent-sky)] bg-[var(--bg-panel)]'
-                : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            }`}
+            className="flex-1 py-2.5 px-3 flex items-center justify-center gap-1.5 font-medium border-b-2 transition-colors cursor-pointer"
+            style={{
+              borderColor: activeTab === 'csv' ? 'var(--accent-sky)' : 'transparent',
+              color: activeTab === 'csv' ? 'var(--accent-sky)' : 'var(--text-secondary)',
+              backgroundColor: activeTab === 'csv' ? 'var(--bg-surface)' : 'transparent',
+            }}
           >
             <FileSpreadsheet className="w-3.5 h-3.5" /> CSV / Excel {!user && <Lock className="w-3 h-3 text-[var(--accent-amber)]" />}
           </button>
         </div>
 
         {/* Tab Content */}
-        <div className="p-5 overflow-y-auto flex-1 text-xs">
+        <div
+          className="p-5 overflow-y-auto flex-1 text-xs"
+          style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)' }}
+        >
           {/* TAB 1: Share Link */}
           {activeTab === 'share' && (
             <div className="space-y-4">
@@ -214,12 +243,12 @@ export function ShareExportModal({
                       type="text"
                       readOnly
                       value={shareUrl}
-                      className="flex-1 px-3 py-1.5 border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-primary)] font-mono-tabular select-all"
+                      className="flex-1 px-3 py-1.5 border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-primary)] font-mono-tabular select-all rounded"
                     />
                     <button
                       type="button"
                       onClick={() => handleCopyClipboard(shareUrl, 'link')}
-                      className="px-3 py-1.5 bg-[var(--accent-sky-bg)] border border-[var(--accent-sky)] text-[var(--accent-sky)] font-medium inline-flex items-center gap-1.5 cursor-pointer"
+                      className="px-3 py-1.5 bg-[var(--accent-sky-bg)] border border-[var(--accent-sky)] text-[var(--accent-sky)] font-medium inline-flex items-center gap-1.5 cursor-pointer rounded hover:brightness-110"
                     >
                       {copiedState === 'link' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                       {copiedState === 'link' ? 'Copied!' : 'Copy Link'}
@@ -246,7 +275,7 @@ export function ShareExportModal({
                     <button
                       type="button"
                       onClick={onRevokeShareToken}
-                      className="px-2.5 py-1 text-[11px] text-red-400 border border-red-900/50 hover:bg-red-950/30 inline-flex items-center gap-1 cursor-pointer"
+                      className="px-2.5 py-1 text-[11px] bg-[var(--accent-danger-bg)] text-[var(--accent-danger)] border border-[var(--accent-danger)] rounded hover:brightness-110 inline-flex items-center gap-1 cursor-pointer"
                     >
                       <Trash2 className="w-3 h-3" /> Revoke Link
                     </button>
@@ -254,17 +283,17 @@ export function ShareExportModal({
                 </div>
               ) : (
                 <div className="p-6 bg-[var(--bg-base)] border border-dashed border-[var(--border-subtle)] rounded text-center space-y-3">
-                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                  <div className="text-sm font-semibold text-[var(--text-primary)]">
                     No active share link for this project yet.
                   </div>
-                  <p className="text-[var(--text-muted)] text-[11px] max-w-sm mx-auto">
+                  <p className="text-[var(--text-secondary)] text-xs max-w-sm mx-auto leading-relaxed">
                     Anyone with the cryptographic link will be able to inspect parts, prices, and vendor consolidation without editing rights.
                   </p>
                   <button
                     type="button"
                     onClick={handleCreateShareLink}
                     disabled={isGeneratingShare}
-                    className="px-4 py-2 bg-[var(--accent-sky-bg)] border border-[var(--accent-sky)] text-[var(--accent-sky)] font-semibold inline-flex items-center gap-1.5 cursor-pointer shadow-sm hover:brightness-110"
+                    className="px-4 py-2 bg-[var(--accent-sky-bg)] border border-[var(--accent-sky)] text-[var(--accent-sky)] font-semibold inline-flex items-center gap-1.5 cursor-pointer shadow-sm hover:brightness-110 rounded"
                   >
                     <Share2 className="w-3.5 h-3.5" />
                     {isGeneratingShare ? 'Generating...' : 'Create Public Share Link'}
@@ -283,22 +312,22 @@ export function ShareExportModal({
                   <button
                     type="button"
                     onClick={() => setCopyFormat('markdown')}
-                    className={`px-2.5 py-1 text-xs rounded-xs font-medium cursor-pointer ${
-                      copyFormat === 'markdown'
-                        ? 'bg-[var(--accent-sky)] text-black'
-                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                    }`}
+                    className="px-2.5 py-1 text-xs rounded-xs font-medium cursor-pointer"
+                    style={{
+                      backgroundColor: copyFormat === 'markdown' ? 'var(--accent-sky)' : 'transparent',
+                      color: copyFormat === 'markdown' ? '#ffffff' : 'var(--text-secondary)',
+                    }}
                   >
                     GitHub Markdown
                   </button>
                   <button
                     type="button"
                     onClick={() => setCopyFormat('reddit')}
-                    className={`px-2.5 py-1 text-xs rounded-xs font-medium cursor-pointer ${
-                      copyFormat === 'reddit'
-                        ? 'bg-[var(--accent-sky)] text-black'
-                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                    }`}
+                    className="px-2.5 py-1 text-xs rounded-xs font-medium cursor-pointer"
+                    style={{
+                      backgroundColor: copyFormat === 'reddit' ? 'var(--accent-sky)' : 'transparent',
+                      color: copyFormat === 'reddit' ? '#ffffff' : 'var(--text-secondary)',
+                    }}
                   >
                     Reddit Markdown Table
                   </button>
@@ -309,22 +338,22 @@ export function ShareExportModal({
                   <button
                     type="button"
                     onClick={() => setCopyMode('summary')}
-                    className={`px-2 py-1 text-xs rounded-xs font-medium cursor-pointer ${
-                      copyMode === 'summary'
-                        ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)] font-semibold'
-                        : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-                    }`}
+                    className="px-2 py-1 text-xs rounded-xs font-medium cursor-pointer"
+                    style={{
+                      backgroundColor: copyMode === 'summary' ? 'var(--bg-elevated)' : 'transparent',
+                      color: copyMode === 'summary' ? 'var(--text-primary)' : 'var(--text-muted)',
+                    }}
                   >
                     Summary Only
                   </button>
                   <button
                     type="button"
                     onClick={() => setCopyMode('full')}
-                    className={`px-2 py-1 text-xs rounded-xs font-medium cursor-pointer ${
-                      copyMode === 'full'
-                        ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)] font-semibold'
-                        : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-                    }`}
+                    className="px-2 py-1 text-xs rounded-xs font-medium cursor-pointer"
+                    style={{
+                      backgroundColor: copyMode === 'full' ? 'var(--bg-elevated)' : 'transparent',
+                      color: copyMode === 'full' ? 'var(--text-primary)' : 'var(--text-muted)',
+                    }}
                   >
                     Full Breakdown
                   </button>
@@ -345,7 +374,7 @@ export function ShareExportModal({
                 <button
                   type="button"
                   onClick={() => handleCopyClipboard(previewText, 'preview')}
-                  className="px-4 py-2 bg-[var(--accent-emerald-bg)] border border-[var(--accent-emerald)] text-[var(--accent-emerald)] font-semibold inline-flex items-center gap-1.5 cursor-pointer shadow-sm hover:brightness-110"
+                  className="px-4 py-2 bg-[var(--accent-emerald-bg)] border border-[var(--accent-emerald)] text-[var(--accent-emerald)] font-semibold inline-flex items-center gap-1.5 cursor-pointer shadow-sm hover:brightness-110 rounded"
                 >
                   {copiedState === 'preview' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                   {copiedState === 'preview' ? 'Copied to Clipboard!' : `Copy ${copyFormat === 'reddit' ? 'Reddit Table' : 'Markdown'}`}
@@ -373,7 +402,7 @@ export function ShareExportModal({
                 <button
                   type="button"
                   onClick={handlePrintClick}
-                  className="px-4 py-2 bg-[var(--accent-sky-bg)] border border-[var(--accent-sky)] text-[var(--accent-sky)] font-semibold inline-flex items-center gap-1.5 cursor-pointer hover:brightness-110"
+                  className="px-4 py-2 bg-[var(--accent-sky-bg)] border border-[var(--accent-sky)] text-[var(--accent-sky)] font-semibold inline-flex items-center gap-1.5 cursor-pointer hover:brightness-110 rounded"
                 >
                   <Printer className="w-3.5 h-3.5" /> Print / Save PDF
                 </button>
@@ -400,7 +429,7 @@ export function ShareExportModal({
                 <button
                   type="button"
                   onClick={handleDownloadCsv}
-                  className="px-4 py-2 bg-[var(--accent-emerald-bg)] border border-[var(--accent-emerald)] text-[var(--accent-emerald)] font-semibold inline-flex items-center gap-1.5 cursor-pointer hover:brightness-110"
+                  className="px-4 py-2 bg-[var(--accent-emerald-bg)] border border-[var(--accent-emerald)] text-[var(--accent-emerald)] font-semibold inline-flex items-center gap-1.5 cursor-pointer hover:brightness-110 rounded"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" /> Download CSV
                 </button>
