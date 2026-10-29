@@ -51,6 +51,7 @@ import {
   type OAuthAccountPublic,
   type SessionPublic,
 } from '../shared/types.js';
+import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
 import { solveBundleOptimization, type SolverResult, type SolverInput } from '../shared/solver.js';
 import { generateProjectCsv, formatCentsToDollars } from '../shared/export.js';
 import { DEMO_BRAKE_PROJECT, DEMO_PC_PROJECT } from '../shared/demoData.js';
@@ -1410,66 +1411,9 @@ export function App() {
       const options = rawRes.options || rawRes;
       const challengeId = rawRes.challengeId;
 
-      let rawOptions = rawRes.options || rawRes;
-      if (rawOptions.publicKey) {
-        rawOptions = rawOptions.publicKey;
-      }
-
-      let publicKeyOptions: any;
-      const pkc = window.PublicKeyCredential as any;
-      if (typeof pkc?.parseCreationOptionsFromJSON === 'function') {
-        const parsed = pkc.parseCreationOptionsFromJSON(rawOptions);
-        publicKeyOptions = parsed?.publicKey || parsed;
-      } else {
-        publicKeyOptions = {
-          ...rawOptions,
-          challenge: Uint8Array.from(atob(rawOptions.challenge.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-          user: {
-            ...rawOptions.user,
-            id: Uint8Array.from(atob(rawOptions.user.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-          },
-          excludeCredentials: (rawOptions.excludeCredentials || []).map((cred: any) => ({
-            ...cred,
-            id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-          })),
-        };
-      }
-
-      const cred = (await navigator.credentials.create({
-        publicKey: publicKeyOptions,
-        signal: webauthnAbortRef.current.signal,
-      })) as any;
-
-      if (!cred) {
-        throw new Error('Passkey creation cancelled');
-      }
-
-      let credJson: any;
-      if (typeof cred.toJSON === 'function') {
-        credJson = cred.toJSON();
-      } else {
-        const rawIdBase64Url = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)))
-          .replace(/\+/g, '-')
-          .replace(/\//g, '_')
-          .replace(/=+$/, '');
-        credJson = {
-          id: cred.id,
-          rawId: rawIdBase64Url,
-          response: {
-            clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(cred.response.clientDataJSON)))
-              .replace(/\+/g, '-')
-              .replace(/\//g, '_')
-              .replace(/=+$/, ''),
-            attestationObject: btoa(String.fromCharCode(...new Uint8Array(cred.response.attestationObject)))
-              .replace(/\+/g, '-')
-              .replace(/\//g, '_')
-              .replace(/=+$/, ''),
-            transports: typeof cred.response.getTransports === 'function' ? cred.response.getTransports() : [],
-          },
-          type: cred.type,
-          authenticatorAttachment: cred.authenticatorAttachment,
-        };
-      }
+      const attResp = await startRegistration({
+        optionsJSON: options,
+      });
 
       const verifyRes = await apiFetch<{
         verified: boolean;
@@ -1481,7 +1425,7 @@ export function App() {
         method: 'POST',
         body: JSON.stringify({
           challengeId,
-          ...credJson,
+          ...attResp,
           custom_name: passkeyCustomName.trim() || undefined,
         }),
       });
@@ -1568,75 +1512,15 @@ export function App() {
       const options = rawRes.options || rawRes;
       const challengeId = rawRes.challengeId;
 
-      let rawOptions = rawRes.options || rawRes;
-      if (rawOptions.publicKey) {
-        rawOptions = rawOptions.publicKey;
-      }
-
-      let publicKeyRequestOptions: any;
-      const pkc = window.PublicKeyCredential as any;
-      if (typeof pkc?.parseRequestOptionsFromJSON === 'function') {
-        const parsed = pkc.parseRequestOptionsFromJSON(rawOptions);
-        publicKeyRequestOptions = parsed?.publicKey || parsed;
-      } else {
-        publicKeyRequestOptions = {
-          ...rawOptions,
-          challenge: Uint8Array.from(atob(rawOptions.challenge.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-          allowCredentials: (rawOptions.allowCredentials || []).map((cred: any) => ({
-            ...cred,
-            id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
-          })),
-        };
-      }
-
-      const assertion = (await navigator.credentials.get({
-        publicKey: publicKeyRequestOptions,
-        signal: webauthnAbortRef.current.signal,
-      })) as any;
-
-      if (!assertion) {
-        throw new Error('Authentication cancelled');
-      }
-
-      let assertionJson: any;
-      if (typeof assertion.toJSON === 'function') {
-        assertionJson = assertion.toJSON();
-      } else {
-        assertionJson = {
-          id: assertion.id,
-          rawId: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId)))
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, ''),
-          response: {
-            clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON)))
-              .replace(/\+/g, '-')
-              .replace(/\//g, '_')
-              .replace(/=+$/, ''),
-            authenticatorData: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData)))
-              .replace(/\+/g, '-')
-              .replace(/\//g, '_')
-              .replace(/=+$/, ''),
-            signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature)))
-              .replace(/\+/g, '-')
-              .replace(/\//g, '_')
-              .replace(/=+$/, ''),
-            userHandle: assertion.response.userHandle
-              ? btoa(String.fromCharCode(...new Uint8Array(assertion.response.userHandle)))
-                  .replace(/\+/g, '-')
-                  .replace(/\//g, '_')
-                  .replace(/=+$/, '')
-              : undefined,
-          },
-          type: assertion.type,
-        };
-      }
+      const asseResp = await startAuthentication({
+        optionsJSON: options,
+      });
 
       const res = await apiFetch<{ user: UserPublic }>('/api/auth/passkeys/login/verify', {
         method: 'POST',
         body: JSON.stringify({
           challengeId,
-          ...assertionJson,
+          ...asseResp,
         }),
       });
 

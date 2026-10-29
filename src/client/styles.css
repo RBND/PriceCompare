@@ -181,16 +181,22 @@ body {
 
 /* Native Modal Dialog Styling (per modern-web-guidance: light-dismiss-a-dialog) */
 dialog.workshop-dialog {
-  position: fixed;
-  inset: 0;
-  margin: auto;
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  margin: 0 !important;
+  inset: auto !important;
   background: var(--bg-surface);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
   padding: 0;
   width: min(840px, calc(100vw - 2rem));
   max-width: 840px;
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
   box-shadow: 0 25px 45px -5px rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
 }
 
 dialog.workshop-dialog.modal-sm {
