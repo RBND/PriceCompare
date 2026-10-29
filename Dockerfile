@@ -18,6 +18,8 @@ RUN npm prune --omit=dev
 # Stage 2: Production Runtime (~35-65MB RAM)
 FROM node:22-alpine AS runtime
 
+RUN apk add --no-cache font-dejavu
+
 WORKDIR /app
 
 ENV NODE_ENV=production

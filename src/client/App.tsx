@@ -55,6 +55,20 @@ import { startRegistration, startAuthentication } from '@simplewebauthn/browser'
 import { solveBundleOptimization, type SolverResult, type SolverInput } from '../shared/solver.js';
 import { generateProjectCsv, formatCentsToDollars } from '../shared/export.js';
 import { DEMO_BRAKE_PROJECT, DEMO_PC_PROJECT } from '../shared/demoData.js';
+import QRCode from 'qrcode';
+import { Bookmark, Pin, PinOff } from 'lucide-react';
+import { ShareExportModal } from './ShareExportModal.js';
+import { BookmarkletModal } from './BookmarkletModal.js';
+import { BookmarkletConfirmationModal } from './BookmarkletConfirmationModal.js';
+import { BookmarkletUndoToast } from './BookmarkletUndoToast.js';
+import {
+  BookmarkletPayloadSchema,
+  evaluateImportConfidence,
+  applyBookmarkletImportToProject,
+  buildBookmarkletHref,
+  type BookmarkletPayload,
+  type VerifiedBookmarkletCommit,
+} from '../shared/bookmarklet.js';
 
 const GUEST_STORAGE_KEY = 'priceit_guest_project_v2';
 const GUEST_MAX_PARTS = 10;
@@ -129,6 +143,45 @@ export function App() {
   const [statusBanner, setStatusBanner] = useState<{ type: 'info' | 'error' | 'success'; text: string } | null>(null);
   const [bannerCountdown, setBannerCountdown] = useState(10);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Share / Export Modal & Bookmarklet State
+  const [isShareExportModalOpen, setIsShareExportModalOpen] = useState(false);
+  const [isBookmarkletModalOpen, setIsBookmarkletModalOpen] = useState(false);
+  const [installKey, setInstallKey] = useState<string>(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        let key = localStorage.getItem('priceit_bookmarklet_install_key');
+        if (!key) {
+          key = makeClientId('bm');
+          localStorage.setItem('priceit_bookmarklet_install_key', key);
+        }
+        return key;
+      }
+    } catch {}
+    return makeClientId('bm');
+  });
+  const [pinnedBomPartId, setPinnedBomPartId] = useState<string | null>(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        return localStorage.getItem('priceit_pinned_bom_part_id') || null;
+      }
+    } catch {}
+    return null;
+  });
+  const [pendingBookmarkletImport, setPendingBookmarkletImport] = useState<{
+    incoming: BookmarkletPayload;
+    reasons: string[];
+    targetPartId?: string | null;
+  } | null>(null);
+  const [bookmarkletToast, setBookmarkletToast] = useState<{
+    id: string;
+    vendorName: string;
+    price: number;
+    packageYield: number;
+    prevProject: ProjectPayload;
+  } | null>(null);
+  const [printQrSvg, setPrintQrSvg] = useState<string>('');
+  const bookmarkletAnchorRef = useRef<HTMLAnchorElement | null>(null);
 
   // Dialog refs (using native <dialog closedby="any"> + Safari light-dismiss fallback per modern-web-guidance)
   const authDialogRef = useRef<HTMLDialogElement | null>(null);
@@ -405,7 +458,8 @@ export function App() {
   // Check URL for ?share=<token> or check logged-in session on startup
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const shareToken = params.get('share');
+    const pathMatch = window.location.pathname.match(/^\/share\/([A-Za-z0-9_-]+)/);
+    const shareToken = pathMatch ? pathMatch[1] : params.get('share');
 
     if (shareToken) {
       fetch(`/api/shares/${encodeURIComponent(shareToken)}`)
@@ -462,6 +516,129 @@ export function App() {
 
     return () => clearInterval(timer);
   }, [statusBanner]);
+
+  // Set bookmarklet anchor href imperatively to bypass React 19 JSX blocker
+  useEffect(() => {
+    if (bookmarkletAnchorRef.current) {
+      bookmarkletAnchorRef.current.setAttribute('href', buildBookmarkletHref(installKey));
+    }
+  }, [installKey]);
+
+  // PriceIt Bookmarklet Receiver and Multi-Tab Synchronization Bus
+  useEffect(() => {
+    const channel =
+      typeof BroadcastChannel !== 'undefined'
+        ? new BroadcastChannel('priceit_bom_sync')
+        : null;
+
+    if (channel) {
+      channel.onmessage = (event) => {
+        if (!event.data) return;
+        if (event.data.type === 'PING_MAIN_TAB') {
+          channel.postMessage({
+            type: 'PONG_MAIN_TAB',
+            parts: activeProject.parts,
+            pinnedBomPartId,
+            guestCount: activeProject.parts.length,
+          });
+        } else if (event.data.type === 'PRICEIT_COMMIT_PART') {
+          const commit = event.data.payload as VerifiedBookmarkletCommit;
+          const prev = activeProject;
+          updateProject((p) => applyBookmarkletImportToProject(p, commit));
+          setBookmarkletToast({
+            id: `toast_${Date.now()}`,
+            vendorName: commit.vendorName,
+            price: commit.price,
+            packageYield: commit.packageYield,
+            prevProject: prev,
+          });
+        }
+      };
+    }
+
+    // Check URL fragment hash for incoming import: #import_part=...
+    const hash = window.location.hash;
+    if (hash && hash.includes('import_part=')) {
+      const match = hash.match(/import_part=([^&]+)/);
+      if (match) {
+        window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        try {
+          const raw = JSON.parse(decodeURIComponent(match[1]));
+          const parsed = BookmarkletPayloadSchema.safeParse(raw);
+          if (parsed.success) {
+            const incoming = parsed.data;
+            const isTrustedKey = incoming.installKey === installKey;
+            const isGuestFull = !user && activeProject.parts.length >= GUEST_MAX_PARTS;
+            const evalResult = evaluateImportConfidence(
+              incoming,
+              activeProject.parts,
+              pinnedBomPartId,
+              false,
+              isTrustedKey,
+              isGuestFull
+            );
+
+            const isPopupWindow = window.name === 'priceit_capture_window';
+
+            const executeCommit = (finalCommit: VerifiedBookmarkletCommit) => {
+              const prev = activeProject;
+              updateProject((p) => applyBookmarkletImportToProject(p, finalCommit));
+              if (channel) {
+                channel.postMessage({ type: 'PRICEIT_COMMIT_PART', payload: finalCommit });
+              }
+              if (isPopupWindow) {
+                setTimeout(() => window.close(), 300);
+              } else {
+                setBookmarkletToast({
+                  id: `toast_${Date.now()}`,
+                  vendorName: finalCommit.vendorName,
+                  price: finalCommit.price,
+                  packageYield: finalCommit.packageYield,
+                  prevProject: prev,
+                });
+              }
+            };
+
+            if (
+              evalResult.decision === 'AUTO_ADD_TO_EXISTING' ||
+              evalResult.decision === 'AUTO_ADD_AS_NEW'
+            ) {
+              executeCommit({
+                bomAction:
+                  evalResult.decision === 'AUTO_ADD_TO_EXISTING'
+                    ? 'ATTACH_EXISTING'
+                    : 'CREATE_NEW',
+                targetBomPartId: evalResult.targetBomPart?.id || null,
+                partName: incoming.partName,
+                partNumber: incoming.partNumber || incoming.vendorSku || '',
+                price: incoming.price || 0,
+                packageYield: incoming.packageYield || 1,
+                shippingCost: incoming.shippingCost || 0,
+                vendorName: incoming.vendorHost || 'Vendor',
+                referenceUrl: incoming.url,
+                vendorSku: incoming.vendorSku,
+                brand: incoming.brand,
+                shippingRuleNote: incoming.shippingNote,
+                inStock: incoming.inStock,
+              });
+            } else {
+              setPendingBookmarkletImport({
+                incoming,
+                reasons: evalResult.reasonsToConfirm,
+                targetPartId: evalResult.targetBomPart?.id || null,
+              });
+            }
+          }
+        } catch (e) {
+          console.error('Failed to parse incoming bookmarklet payload:', e);
+        }
+      }
+    }
+
+    return () => {
+      channel?.close();
+    };
+  }, [activeProject, pinnedBomPartId, installKey, user]);
 
   async function refreshCloudProjectsAndSelect(selectFirst = false, preferredId?: string | null) {
     try {
@@ -528,6 +705,9 @@ export function App() {
     };
     setIsReadOnlyShare(false);
     setConflictServerVersion(null);
+    if (window.location.pathname.startsWith('/share/')) {
+      window.history.replaceState({}, '', '/');
+    }
     if (window.location.search.includes('share=')) {
       window.history.replaceState({}, '', window.location.pathname);
     }
@@ -1782,7 +1962,7 @@ export function App() {
     URL.revokeObjectURL(url);
   }
 
-  function handlePrintDatasheet() {
+  async function handlePrintDatasheet() {
     if (!user) {
       setStatusBanner({
         type: 'info',
@@ -1791,7 +1971,31 @@ export function App() {
       authDialogRef.current?.showModal();
       return;
     }
-    window.print();
+
+    if (!activeProject.id || !cloudProjects.some((cp) => cp.id === activeProject.id)) {
+      await saveCloudProjectNow();
+    }
+
+    let token = activeProject.share_token;
+    if (!token && activeProject.id) {
+      token = await handleGenerateShareToken();
+    }
+
+    const targetUrl = token ? `https://priceit.rbnd.cc/share/${token}` : `https://priceit.rbnd.cc`;
+    try {
+      const svg = await QRCode.toString(targetUrl, {
+        type: 'svg',
+        margin: 1,
+        color: { dark: '#000000', light: '#ffffff' },
+      });
+      setPrintQrSvg(svg);
+    } catch {}
+
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        window.print();
+      }, 100);
+    });
   }
 
   async function handleOpenShareDialog() {
@@ -1810,18 +2014,23 @@ export function App() {
     shareDialogRef.current?.showModal();
   }
 
-  async function handleGenerateShareToken() {
-    if (!activeProject.id) return;
+  async function handleGenerateShareToken(): Promise<string | null> {
+    if (!activeProject.id || !cloudProjects.some((cp) => cp.id === activeProject.id)) {
+      await saveCloudProjectNow();
+    }
+    if (!activeProject.id) return null;
     try {
       const res = await apiFetch<{ share_token: string }>(`/api/projects/${activeProject.id}/share`, {
         method: 'POST',
       });
       setActiveProject((prev) => ({ ...prev, share_token: res.share_token }));
+      return res.share_token;
     } catch (err: unknown) {
       setStatusBanner({
         type: 'error',
         text: err instanceof Error ? err.message : 'Failed to generate share link',
       });
+      return null;
     }
   }
 
@@ -1831,6 +2040,24 @@ export function App() {
       await apiFetch(`/api/projects/${activeProject.id}/share`, { method: 'DELETE' });
       setActiveProject((prev) => ({ ...prev, share_token: null }));
     } catch {}
+  }
+
+  function handleTogglePinBomPart(partId: string | null) {
+    if (!partId || pinnedBomPartId === partId) {
+      setPinnedBomPartId(null);
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem('priceit_pinned_bom_part_id');
+        }
+      } catch {}
+    } else {
+      setPinnedBomPartId(partId);
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('priceit_pinned_bom_part_id', partId);
+        }
+      } catch {}
+    }
   }
 
   // Distinct vendors across offerings + vendor profiles
@@ -2810,6 +3037,26 @@ export function App() {
             </button>
           )}
 
+          <a
+            ref={bookmarkletAnchorRef}
+            onClick={(e) => {
+              e.preventDefault();
+              setIsBookmarkletModalOpen(true);
+            }}
+            draggable
+            className="h-[26px] px-2 text-xs border inline-flex items-center gap-1 cursor-grab active:cursor-grabbing box-border select-none"
+            style={{
+              height: '26px',
+              boxSizing: 'border-box',
+              backgroundColor: 'var(--accent-amber-bg)',
+              borderColor: 'var(--accent-amber)',
+              color: 'var(--accent-amber)',
+            }}
+            title="PriceIt Capture Bookmarklet (Drag to your bookmarks bar, or click for setup guide)"
+          >
+            <Bookmark className="w-3.5 h-3.5 fill-[var(--accent-amber)]" /> + PriceIt Capture
+          </a>
+
           {!user ? (
             <div
               className="h-[26px] text-xs font-mono-tabular px-2 border inline-flex items-center gap-1.5 box-border"
@@ -2860,7 +3107,7 @@ export function App() {
 
           <button
             type="button"
-            onClick={handleExportCsv}
+            onClick={() => setIsShareExportModalOpen(true)}
             className="h-[26px] px-2 text-xs border inline-flex items-center gap-1 cursor-pointer box-border"
             style={{
               height: '26px',
@@ -2868,38 +3115,9 @@ export function App() {
               backgroundColor: 'var(--bg-elevated)',
               borderColor: 'var(--border-subtle)',
             }}
-            title="Export Sanitized CSV / Excel BOM"
+            title="Share Link, Copy Markdown/Reddit, Print PDF, or Export CSV"
           >
-            <FileSpreadsheet className="w-3.5 h-3.5" /> Export CSV
-          </button>
-
-          <button
-            type="button"
-            onClick={handlePrintDatasheet}
-            className="h-[26px] px-2 text-xs border inline-flex items-center gap-1 cursor-pointer box-border"
-            style={{
-              height: '26px',
-              boxSizing: 'border-box',
-              backgroundColor: 'var(--bg-elevated)',
-              borderColor: 'var(--border-subtle)',
-            }}
-            title="Print PDF Datasheet"
-          >
-            <Printer className="w-3.5 h-3.5" /> Print PDF
-          </button>
-
-          <button
-            type="button"
-            onClick={handleOpenShareDialog}
-            className="h-[26px] px-2 text-xs border inline-flex items-center gap-1 cursor-pointer box-border"
-            style={{
-              height: '26px',
-              boxSizing: 'border-box',
-              backgroundColor: 'var(--bg-elevated)',
-              borderColor: 'var(--border-subtle)',
-            }}
-          >
-            <Share2 className="w-3.5 h-3.5" /> Share
+            <Share2 className="w-3.5 h-3.5 text-[var(--accent-sky)]" /> Share / Export
           </button>
 
           <button
@@ -3056,6 +3274,30 @@ export function App() {
           </div>
         </div>
       )}
+
+      {/* Pinned BOM Part Active Indicator */}
+      {(() => {
+        const pinnedPart = activeProject.parts.find((p) => p.id === pinnedBomPartId);
+        if (!pinnedPart) return null;
+        return (
+          <div className="no-print px-4 py-2 bg-[var(--accent-amber-bg)] border-b border-[var(--accent-amber)] flex items-center justify-between text-xs text-[var(--accent-amber)]">
+            <div className="flex items-center gap-2">
+              <Bookmark className="w-3.5 h-3.5 fill-[var(--accent-amber)] shrink-0" />
+              <span>
+                <strong>PINNED FOR BOOKMARKLET:</strong> All captured offerings will auto-attach to{' '}
+                <strong>{pinnedPart.name}</strong> {pinnedPart.part_number ? `(${pinnedPart.part_number})` : ''}.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleTogglePinBomPart(null)}
+              className="px-2 py-0.5 border border-[var(--accent-amber)] hover:bg-[var(--accent-amber)] hover:text-black rounded text-[11px] font-medium cursor-pointer"
+            >
+              Unpin Part
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Project Metadata Header */}
       <section
@@ -3441,7 +3683,7 @@ export function App() {
                     <th className="w-36">Category</th>
                     <th className="w-28">Req Qty</th>
                     <th className="w-32">Coverage</th>
-                    <th className="w-12 no-print"></th>
+                    <th className="w-16 no-print"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3617,15 +3859,36 @@ export function App() {
                           </td>
                           <td className="no-print text-center">
                             {!isReadOnlyShare && (
-                              <button
-                                type="button"
-                                onClick={() => handleRemovePart(part.id)}
-                                className="p-1 opacity-70 hover:opacity-100 cursor-pointer"
-                                title="Remove Part"
-                                aria-label={`Remove ${part.name}`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <div className="flex items-center justify-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleTogglePinBomPart(part.id)}
+                                  className={`p-1 cursor-pointer transition-colors ${
+                                    pinnedBomPartId === part.id
+                                      ? 'text-[var(--accent-amber)] opacity-100'
+                                      : 'opacity-50 hover:opacity-100 text-[var(--text-secondary)]'
+                                  }`}
+                                  title={
+                                    pinnedBomPartId === part.id
+                                      ? 'Pinned! Bookmarklet captures attach directly to this part (Click to unpin)'
+                                      : 'Pin for Bookmarklet Capture (Auto-attaches scraped offerings to this part)'
+                                  }
+                                  aria-label={`Pin ${part.name} for bookmarklet capture`}
+                                >
+                                  <Bookmark
+                                    className={`w-3.5 h-3.5 ${pinnedBomPartId === part.id ? 'fill-[var(--accent-amber)]' : ''}`}
+                                  />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemovePart(part.id)}
+                                  className="p-1 opacity-70 hover:opacity-100 cursor-pointer"
+                                  title="Remove Part"
+                                  aria-label={`Remove ${part.name}`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -4767,46 +5030,52 @@ export function App() {
 
                 {/* Prominent Export, Print Datasheet & Share Project Actions */}
                 <div className="no-print pt-1 flex flex-col gap-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="flex">
                     <button
                       type="button"
-                      onClick={handleExportCsv}
-                      className="px-3 py-2 text-xs font-semibold border flex items-center justify-center gap-1.5 cursor-pointer"
+                      onClick={() => setIsShareExportModalOpen(true)}
+                      className="w-full px-4 py-2.5 text-xs font-semibold border flex items-center justify-center gap-2 cursor-pointer shadow-sm hover:brightness-110"
                       style={{
-                        backgroundColor: 'var(--bg-elevated)',
-                        borderColor: 'var(--border-subtle)',
+                        backgroundColor: 'var(--accent-sky-bg)',
+                        borderColor: 'var(--accent-sky)',
+                        color: 'var(--accent-sky)',
                       }}
                     >
-                      <FileSpreadsheet className="w-3.5 h-3.5" /> Export CSV
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handlePrintDatasheet}
-                      className="px-3 py-2 text-xs font-semibold border flex items-center justify-center gap-1.5 cursor-pointer"
-                      style={{
-                        backgroundColor: 'var(--bg-elevated)',
-                        borderColor: 'var(--border-subtle)',
-                      }}
-                    >
-                      <Printer className="w-3.5 h-3.5" /> Print PDF Datasheet
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleOpenShareDialog}
-                      className="px-3 py-2 text-xs font-semibold border flex items-center justify-center gap-1.5 cursor-pointer"
-                      style={{
-                        backgroundColor: 'var(--accent-amber-bg)',
-                        borderColor: 'var(--accent-amber)',
-                        color: 'var(--accent-amber)',
-                      }}
-                    >
-                      <Share2 className="w-3.5 h-3.5" /> Share Project Link
+                      <Share2 className="w-4 h-4" /> Open Share / Export Hub (CSV, PDF with QR, Markdown, Reddit, Link)
                     </button>
                   </div>
                 </div>
               </section>
+
+              {/* Branded Print PDF Footer with Live Scannable QR Code */}
+              <div className="print-only print-branded-footer">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  {printQrSvg && (
+                    <div
+                      style={{ width: '64px', height: '64px' }}
+                      dangerouslySetInnerHTML={{ __html: printQrSvg }}
+                    />
+                  )}
+                  <div>
+                    <div style={{ fontWeight: 'bold', fontSize: '11pt' }}>
+                      PriceIt — Universal Parts &amp; Bundle Optimizer
+                    </div>
+                    <div style={{ color: '#4b5563', fontSize: '8.5pt' }}>
+                      Scan QR code or visit{' '}
+                      <strong style={{ color: '#000' }}>
+                        {activeProject.share_token
+                          ? `priceit.rbnd.cc/share/${activeProject.share_token}`
+                          : 'priceit.rbnd.cc'}
+                      </strong>{' '}
+                      for live pricing, direct order links, and bundle solver updates.
+                    </div>
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right', fontSize: '8pt', color: '#6b7280' }}>
+                  <div>Datasheet Generated: {new Date().toLocaleDateString()}</div>
+                  <div>Total Cost: ${formatCentsToDollars(solverResult.grand_total_cents)}</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -6067,6 +6336,75 @@ export function App() {
           </div>
         </div>
       </dialog>
+
+      {/* Feature 1: Unified Share & Export Modal */}
+      <ShareExportModal
+        isOpen={isShareExportModalOpen}
+        onClose={() => setIsShareExportModalOpen(false)}
+        project={activeProject}
+        solverResult={solverResult}
+        user={user}
+        onRequireAuth={(text) => {
+          setIsShareExportModalOpen(false);
+          setStatusBanner({ type: 'info', text });
+          authDialogRef.current?.showModal();
+        }}
+        onGenerateShareToken={handleGenerateShareToken}
+        onRevokeShareToken={handleRevokeShareToken}
+        onTriggerPrint={handlePrintDatasheet}
+      />
+
+      {/* Feature 2: Bookmarklet Setup & Guide Modal */}
+      <BookmarkletModal
+        isOpen={isBookmarkletModalOpen}
+        onClose={() => setIsBookmarkletModalOpen(false)}
+        installKey={installKey}
+      />
+
+      {/* Feature 2: Bookmarklet Confirmation Modal */}
+      {pendingBookmarkletImport && (
+        <BookmarkletConfirmationModal
+          isOpen={Boolean(pendingBookmarkletImport)}
+          incoming={pendingBookmarkletImport.incoming}
+          existingBomParts={activeProject.parts}
+          reasonsToConfirm={pendingBookmarkletImport.reasons}
+          initialTargetBomPartId={pendingBookmarkletImport.targetPartId}
+          isGuestFull={!user && activeProject.parts.length >= GUEST_MAX_PARTS}
+          onCommit={(finalCommit) => {
+            const prev = activeProject;
+            updateProject((p) => applyBookmarkletImportToProject(p, finalCommit));
+            setPendingBookmarkletImport(null);
+            setBookmarkletToast({
+              id: `toast_${Date.now()}`,
+              vendorName: finalCommit.vendorName,
+              price: finalCommit.price,
+              packageYield: finalCommit.packageYield,
+              prevProject: prev,
+            });
+            if (window.name === 'priceit_capture_window') {
+              setTimeout(() => window.close(), 250);
+            }
+          }}
+          onCancel={() => {
+            setPendingBookmarkletImport(null);
+            if (window.name === 'priceit_capture_window') {
+              window.close();
+            }
+          }}
+        />
+      )}
+
+      {/* Feature 2: Bookmarklet Auto-Add Undo Toast */}
+      <BookmarkletUndoToast
+        toast={bookmarkletToast}
+        onUndo={() => {
+          if (bookmarkletToast) {
+            updateProject(() => bookmarkletToast.prevProject, true);
+            setBookmarkletToast(null);
+          }
+        }}
+        onDismiss={() => setBookmarkletToast(null)}
+      />
     </div>
   );
 }

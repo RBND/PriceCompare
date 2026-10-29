@@ -52,6 +52,9 @@ import {
   createOrGetShareToken,
   revokeShareToken,
 } from './projects.js';
+import { solveBundleOptimization } from '../shared/solver.js';
+import { formatCentsToDollars } from '../shared/export.js';
+import { renderOgCardPng, escapeXml } from './ogCard.js';
 
 export function createApp(db: Database.Database, rateLimiter = new AuthRateLimiter()): express.Express {
   const app = express();
@@ -1877,6 +1880,129 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     }
 
     res.json({ ok: true });
+  });
+
+  // Rate limiter for public OpenGraph image rendering (DoS protection)
+  const ogRateLimits = new Map<string, { count: number; resetAt: number }>();
+  function checkOgRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = ogRateLimits.get(ip);
+    if (!entry || now > entry.resetAt) {
+      ogRateLimits.set(ip, { count: 1, resetAt: now + 60000 });
+      return true;
+    }
+    if (entry.count >= 60) {
+      return false;
+    }
+    entry.count++;
+    return true;
+  }
+
+  // GET /api/og/:token (Dynamic OpenGraph 1200x630 preview card PNG)
+  app.get('/api/og/:token', (req, res) => {
+    const ip = getClientIp(req);
+    if (!checkOgRateLimit(ip)) {
+      res.status(429).json({ error: 'Too many requests for OpenGraph previews. Please try again shortly.' });
+      return;
+    }
+
+    let token = req.params.token;
+    if (token.endsWith('.png')) {
+      token = token.slice(0, -4);
+    }
+
+    const shareRow = db
+      .prepare(`SELECT project_id FROM project_shares WHERE share_token = ? AND is_active = 1`)
+      .get(token) as { project_id: string } | undefined;
+
+    if (!shareRow) {
+      res.status(404).json({ error: 'Share link not found or revoked' });
+      return;
+    }
+
+    const project = loadFullProjectUnscoped(db, shareRow.project_id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+
+    try {
+      const solverResult = solveBundleOptimization(project);
+      const theme = req.query.theme === 'light' ? 'light' : 'dark';
+      const pngBuffer = renderOgCardPng(project, solverResult, theme);
+
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
+      res.send(pngBuffer);
+    } catch (err: unknown) {
+      console.error('Failed to render OG card:', err);
+      res.status(500).json({ error: 'Failed to generate preview image' });
+    }
+  });
+
+  // GET /share/:token (Clean public route with OpenGraph meta injection)
+  app.get('/share/:token', (req, res) => {
+    let token = req.params.token;
+    if (token.endsWith('/')) token = token.slice(0, -1);
+
+    const shareRow = db
+      .prepare(`SELECT project_id FROM project_shares WHERE share_token = ? AND is_active = 1`)
+      .get(token) as { project_id: string } | undefined;
+
+    let indexPath = path.join(process.cwd(), 'dist', 'client', 'index.html');
+    if (!fs.existsSync(indexPath)) {
+      indexPath = path.join(process.cwd(), 'index.html');
+    }
+
+    if (!fs.existsSync(indexPath)) {
+      res.status(404).send('Not Found');
+      return;
+    }
+
+    let html = fs.readFileSync(indexPath, 'utf-8');
+
+    if (!shareRow) {
+      res.type('html').send(html);
+      return;
+    }
+
+    const project = loadFullProjectUnscoped(db, shareRow.project_id);
+    if (!project) {
+      res.type('html').send(html);
+      return;
+    }
+
+    const solverResult = solveBundleOptimization(project);
+    const theme = req.query.theme === 'light' ? 'light' : 'dark';
+    const title = `PriceIt — ${escapeXml(project.name)}`;
+    const costStr = `$${formatCentsToDollars(solverResult.grand_total_cents)}`;
+    const savingsStr =
+      solverResult.savings_vs_baseline_cents > 0
+        ? ` (Save $${formatCentsToDollars(solverResult.savings_vs_baseline_cents)})`
+        : '';
+    const desc = `Total: ${costStr}${savingsStr} across ${solverResult.vendor_orders.length} vendor${
+      solverResult.vendor_orders.length === 1 ? '' : 's'
+    }. Optimal Bill of Materials solved with PriceIt.`;
+    const ogImageUrl = `https://priceit.rbnd.cc/api/og/${encodeURIComponent(token)}.png?theme=${theme}`;
+    const pageUrl = `https://priceit.rbnd.cc/share/${encodeURIComponent(token)}`;
+
+    const ogTags = `
+    <base href="/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="${pageUrl}" />
+    <meta property="og:title" content="${title}" />
+    <meta property="og:description" content="${desc}" />
+    <meta property="og:image" content="${ogImageUrl}" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${title}" />
+    <meta name="twitter:description" content="${desc}" />
+    <meta name="twitter:image" content="${ogImageUrl}" />
+`;
+
+    html = html.replace('<head>', `<head>\n${ogTags}`);
+    res.type('html').send(html);
   });
 
   // GET /api/shares/:token (Public read-only access to shared project)

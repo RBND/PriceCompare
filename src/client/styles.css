@@ -259,5 +259,16 @@ dialog.workshop-dialog::backdrop {
     break-inside: avoid;
     margin-bottom: 12pt;
   }
+
+  .print-branded-footer {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    border-top: 1.5pt solid #000 !important;
+    padding-top: 8pt;
+    margin-top: 18pt;
+    break-inside: avoid;
+    font-size: 9pt;
+  }
 }
 

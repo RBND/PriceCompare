@@ -63,8 +63,7 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     // Tab 3 checkout-ready 2-column layout with Open Vendor Link ↗ and Financial Summary Ledger
     expect(html).toContain('Open Vendor Link ↗');
     expect(html).toContain('Financial Summary Ledger');
-    expect(html).toContain('Print PDF Datasheet');
-    expect(html).toContain('Share Project Link');
+    expect(html).toContain('Share / Export');
   });
 
   it('renders Tab 2 inline editable inputs, Tab 3 Mark Purchased actions, and Purchase Record modal', () => {
