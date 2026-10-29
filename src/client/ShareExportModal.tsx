@@ -50,8 +50,13 @@ export function ShareExportModal({
   const [copiedState, setCopiedState] = useState<string | null>(null);
   const [qrSvg, setQrSvg] = useState<string>('');
   const [isGeneratingShare, setIsGeneratingShare] = useState(false);
+  const [localShareToken, setLocalShareToken] = useState<string | null>(project.share_token ?? null);
 
-  const shareToken = project.share_token;
+  useEffect(() => {
+    setLocalShareToken(project.share_token ?? null);
+  }, [project.share_token]);
+
+  const shareToken = localShareToken ?? project.share_token;
   const shareUrl = shareToken
     ? `https://priceit.rbnd.cc/share/${shareToken}`
     : `https://priceit.rbnd.cc`;
@@ -90,10 +95,18 @@ export function ShareExportModal({
     }
     setIsGeneratingShare(true);
     try {
-      await onGenerateShareToken();
+      const generated = await onGenerateShareToken();
+      if (generated) {
+        setLocalShareToken(generated);
+      }
     } finally {
       setIsGeneratingShare(false);
     }
+  };
+
+  const handleRevokeShareLink = async () => {
+    await onRevokeShareToken();
+    setLocalShareToken(null);
   };
 
   const handleDownloadCsv = () => {
@@ -274,7 +287,7 @@ export function ShareExportModal({
                     </div>
                     <button
                       type="button"
-                      onClick={onRevokeShareToken}
+                      onClick={handleRevokeShareLink}
                       className="px-2.5 py-1 text-[11px] bg-[var(--accent-danger-bg)] text-[var(--accent-danger)] border border-[var(--accent-danger)] rounded hover:brightness-110 inline-flex items-center gap-1 cursor-pointer"
                     >
                       <Trash2 className="w-3 h-3" /> Revoke Link

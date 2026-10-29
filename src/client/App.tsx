@@ -791,8 +791,8 @@ export function App() {
     };
   }
 
-  async function saveCloudProjectNow(projectToSave = activeProject) {
-    if (!user || isReadOnlyShare) return;
+  async function saveCloudProjectNow(projectToSave = activeProject): Promise<(ProjectPayload & { share_token?: string | null }) | null> {
+    if (!user || isReadOnlyShare) return null;
     const sanitized = normalizeProjectForSave(projectToSave);
     setIsSaving(true);
     setConflictServerVersion(null);
@@ -806,8 +806,9 @@ export function App() {
           }
         );
         setActiveProject(res.project);
-        await refreshCloudProjectsAndSelect(false);
+        await refreshCloudProjectsAndSelect(false, res.project.id);
         setStatusBanner({ type: 'success', text: `Saved v${res.project.version} to cloud.` });
+        return res.project;
       } else {
         const res = await apiFetch<{ project: ProjectPayload & { share_token?: string | null } }>('/api/projects', {
           method: 'POST',
@@ -817,8 +818,9 @@ export function App() {
           }),
         });
         setActiveProject(res.project);
-        await refreshCloudProjectsAndSelect(false);
+        await refreshCloudProjectsAndSelect(false, res.project.id);
         setStatusBanner({ type: 'success', text: 'Created cloud project.' });
+        return res.project;
       }
     } catch (err: unknown) {
       const apiErr = err as Error & { status?: number; current_version?: number };
@@ -829,6 +831,7 @@ export function App() {
         type: 'error',
         text: err instanceof Error ? err.message : 'Failed to save cloud project',
       });
+      return null;
     } finally {
       setIsSaving(false);
     }
@@ -2077,15 +2080,27 @@ export function App() {
   }
 
   async function handleGenerateShareToken(): Promise<string | null> {
-    if (!activeProject.id || !cloudProjects.some((cp) => cp.id === activeProject.id)) {
-      await saveCloudProjectNow();
+    if (!user) {
+      setStatusBanner({
+        type: 'info',
+        text: 'Sign in to generate read-only cryptographic share links.',
+      });
+      authDialogRef.current?.showModal();
+      return null;
     }
-    if (!activeProject.id) return null;
+
+    let targetProjectId = activeProject.id;
+    if (!targetProjectId || !cloudProjects.some((cp) => cp.id === targetProjectId)) {
+      const saved = await saveCloudProjectNow();
+      if (!saved || !saved.id) return null;
+      targetProjectId = saved.id;
+    }
+
     try {
-      const res = await apiFetch<{ share_token: string }>(`/api/projects/${activeProject.id}/share`, {
+      const res = await apiFetch<{ share_token: string }>(`/api/projects/${targetProjectId}/share`, {
         method: 'POST',
       });
-      setActiveProject((prev) => ({ ...prev, share_token: res.share_token }));
+      setActiveProject((prev) => ({ ...prev, id: targetProjectId, share_token: res.share_token }));
       return res.share_token;
     } catch (err: unknown) {
       setStatusBanner({
