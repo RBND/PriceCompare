@@ -1,22 +1,21 @@
 services:
-  price-compare:
-    build: .
-    container_name: price-compare
+  priceit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: priceit
     restart: unless-stopped
     ports:
-      - "0.0.0.0:28085:28085"
+      - "127.0.0.1:28085:28085"
     environment:
       - NODE_ENV=production
       - PORT=28085
-      - DATA_DIR=/app/data
-      - EBAY_CLIENT_ID=${EBAY_CLIENT_ID:-}
-      - EBAY_CLIENT_SECRET=${EBAY_CLIENT_SECRET:-}
-    env_file:
-      - path: .env
-        required: false
+      - DATABASE_PATH=/app/data/priceit.db
     volumes:
       - ./data:/app/data
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:28085/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

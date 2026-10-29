@@ -1,4 +1,5 @@
 node_modules/
+dist/
 data/*.db*
 data/*.sqlite*
 data/backups/
@@ -8,3 +9,6 @@ data/state.json.*
 .env
 *.log
 .DS_Store
+
+AGENTS.md
+.env.local
