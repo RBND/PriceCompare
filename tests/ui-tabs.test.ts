@@ -315,4 +315,76 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     expect(treeText).toContain('No vendors in this project yet.');
     expect(treeText).toContain('No vendor orders selected yet.');
   });
+
+  it('persists cleared and PC demo workspaces in localStorage so page refresh does not revert to brake demo', () => {
+    const store = new Map<string, string>();
+    const mockStorage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, val: string) => store.set(key, val),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+    };
+    (globalThis as unknown as { localStorage: typeof mockStorage }).localStorage = mockStorage;
+
+    // Simulate returning visitor who cleared their workspace
+    mockStorage.setItem('priceit_has_visited', 'true');
+    mockStorage.setItem(
+      'priceit_guest_project_v2',
+      JSON.stringify({
+        client_project_uuid: 'guest-cleared-uuid',
+        is_dirty: false,
+        project: {
+          name: 'My Custom Project',
+          category: 'Custom Project',
+          currency: 'USD',
+          default_tax_bps: 0,
+          version: 1,
+          parts: [],
+          offerings: [],
+          bundle_mappings: [],
+          vendor_profiles: [],
+        },
+      })
+    );
+
+    // Initial render must load the saved cleared project, NOT DEMO_BRAKE_PROJECT
+    const htmlCleared = renderToStaticMarkup(React.createElement(App));
+    expect(htmlCleared).toContain('My Custom Project');
+    expect(htmlCleared).not.toContain('330mm Vented Front Brake Rotor');
+
+    // Simulate visitor who selected Demo: PC Build
+    mockStorage.setItem(
+      'priceit_guest_project_v2',
+      JSON.stringify({
+        client_project_uuid: 'guest-pc-uuid',
+        is_dirty: true,
+        project: {
+          name: 'AM5 SFF Workstation Upgrade',
+          category: 'PC Build',
+          currency: 'USD',
+          default_tax_bps: 625,
+          version: 1,
+          parts: [
+            {
+              id: 'pc-cpu',
+              name: 'AMD Ryzen 7 9700X',
+              part_number: '100-100001404WOF',
+              category_tag: 'CPU',
+              required_qty: 1,
+              sort_order: 0,
+            },
+          ],
+          offerings: [],
+          bundle_mappings: [],
+          vendor_profiles: [],
+        },
+      })
+    );
+
+    // Initial render must load the saved PC demo, NOT DEMO_BRAKE_PROJECT
+    const htmlPc = renderToStaticMarkup(React.createElement(App));
+    expect(htmlPc).toContain('AM5 SFF Workstation Upgrade');
+    expect(htmlPc).toContain('AMD Ryzen 7 9700X');
+    expect(htmlPc).not.toContain('330mm Vented Front Brake Rotor');
+  });
 });

@@ -390,7 +390,7 @@ export function buildBookmarkletHref(installKey: string): string {
     installKey:'${installKey}'
   };
 
-  // 1. JSON-LD
+  /* 1. JSON-LD */
   try{
     var scripts=document.querySelectorAll('script[type="application/ld+json"]');
     var findProds=function(n,acc){
@@ -429,7 +429,7 @@ export function buildBookmarkletHref(installKey: string): string {
     }
   }catch(_){}
 
-  // 2. Domain Adapters
+  /* 2. Domain Adapters */
   try{
     if(host.indexOf('amazon.')>=0){
       res.partName=res.partName||query(['#productTitle','#title']);
@@ -477,7 +477,7 @@ export function buildBookmarkletHref(installKey: string): string {
     }
   }catch(_){}
 
-  // 3. Meta Fallbacks
+  /* 3. Meta Fallbacks */
   if(!res.partName) res.partName=query(['meta[property="og:title"]','meta[name="twitter:title"]','h1[itemprop="name"]','h1'])||clean(document.title);
   if(res.price===null){
     var mp=query(['meta[property="product:price:amount"]','meta[property="og:price:amount"]','[itemprop="price"]']);
@@ -485,7 +485,7 @@ export function buildBookmarkletHref(installKey: string): string {
   }
   if(!res.partNumber) res.partNumber=query(['[itemprop="mpn"]','[itemprop="sku"]']);
 
-  // 4. Bundle/Pack Heuristics
+  /* 4. Bundle/Pack Heuristics */
   res.partName=res.partName.slice(0,250).replace(/\\s*[|\\-–—]\\s*(Amazon\\.com|Mouser|DigiKey|McMaster-Carr|Grainger|FCP Euro|Newegg|B&H Photo|Micro Center).*$/i,'').trim();
   var pMatches=[/\\b(?:pack|set|box|lot)\\s+of\\s+([0-9]{1,4})\\b/i,/\\b([0-9]{1,3})\\s*-\\s*(?:pack|pk|pc|set)\\b/i,/\\(([0-9]{1,3})\\s*(?:pack|pk)\\)/i];
   for(var ki=0;ki<pMatches.length;ki++){
@@ -498,13 +498,13 @@ export function buildBookmarkletHref(installKey: string): string {
   if(/\\b(bundle|combo|kit|overhaul|package)\\b/i.test(res.partName)) res.bundleKeywordsFound.push('Bundle/Kit');
   if(res.bundleKeywordsFound.length>0||res.packageYield>1) res.isLikelyBundleOrPack=true;
 
-  // Truncate fields to safe bounds
+  /* 5. Safe Bounds */
   res.partName=res.partName.slice(0,200);
   res.partNumber=(res.partNumber||res.vendorSku||'').slice(0,100);
 
   var payload=encodeURIComponent(JSON.stringify(res));
-  window.open(ORIGIN+'/#import_part='+payload,'priceit_capture_window','width=560,height=720');
+  window.open(ORIGIN+'/#import_part='+payload,'priceit_capture_window');
 })();`;
 
-  return `javascript:${code.replace(/\n\s*/g, '')}`;
+  return `javascript:${code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\n\s*/g, '')}`;
 }

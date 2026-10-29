@@ -72,6 +72,8 @@ import {
 
 const GUEST_STORAGE_KEY = 'priceit_guest_project_v2';
 const GUEST_MAX_PARTS = 10;
+const ACTIVE_CLOUD_ID_KEY = 'priceit_active_cloud_id';
+const HAS_VISITED_KEY = 'priceit_has_visited';
 
 interface StoredGuestState {
   client_project_uuid: string;
@@ -85,16 +87,46 @@ function makeClientId(prefix: string): string {
 
 function loadInitialGuestState(): StoredGuestState {
   try {
-    const raw = localStorage.getItem(GUEST_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as StoredGuestState;
-      if (parsed && parsed.project && Array.isArray(parsed.project.parts)) {
-        return parsed;
+    if (typeof localStorage !== 'undefined') {
+      const hasVisited = localStorage.getItem(HAS_VISITED_KEY);
+      const raw = localStorage.getItem(GUEST_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as StoredGuestState;
+        if (parsed && parsed.project && Array.isArray(parsed.project.parts)) {
+          return parsed;
+        }
+      }
+      // If the user has visited before and has a cleared/empty workspace, do not resurrect demo
+      if (hasVisited) {
+        return {
+          client_project_uuid: makeClientId('guest-uuid'),
+          is_dirty: false,
+          project: {
+            id: undefined,
+            client_project_uuid: makeClientId('uuid'),
+            name: 'Untitled Parts Project',
+            category: 'Custom Project',
+            currency: 'USD',
+            default_tax_bps: 0,
+            version: 1,
+            parts: [],
+            offerings: [],
+            bundle_mappings: [],
+            vendor_profiles: [],
+          },
+        };
       }
     }
   } catch {
     // Ignore localStorage parse errors
   }
+
+  // First time visitor: mark visited and load default introductory demo
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(HAS_VISITED_KEY, 'true');
+    }
+  } catch {}
 
   return {
     client_project_uuid: makeClientId('guest-uuid'),
@@ -556,6 +588,13 @@ export function App() {
       };
     }
 
+    // Wait until auth loading has settled so we import into the actual resolved project
+    if (authLoading) {
+      return () => {
+        channel?.close();
+      };
+    }
+
     // Check URL fragment hash for incoming import: #import_part=...
     const hash = window.location.hash;
     if (hash && hash.includes('import_part=')) {
@@ -638,7 +677,7 @@ export function App() {
     return () => {
       channel?.close();
     };
-  }, [activeProject, pinnedBomPartId, installKey, user]);
+  }, [activeProject, pinnedBomPartId, installKey, user, authLoading]);
 
   async function refreshCloudProjectsAndSelect(selectFirst = false, preferredId?: string | null) {
     try {
@@ -654,7 +693,14 @@ export function App() {
       }>('/api/projects');
       setCloudProjects(listRes.projects);
 
-      const targetId = preferredId || (selectFirst && listRes.projects[0]?.id);
+      let savedActiveId: string | null = null;
+      try {
+        if (typeof localStorage !== 'undefined') {
+          savedActiveId = localStorage.getItem(ACTIVE_CLOUD_ID_KEY);
+        }
+      } catch {}
+
+      const targetId = preferredId || (savedActiveId && listRes.projects.some((p) => p.id === savedActiveId) ? savedActiveId : (selectFirst && listRes.projects[0]?.id));
       if (targetId) {
         const fullRes = await apiFetch<{ project: ProjectPayload & { share_token?: string | null } }>(
           `/api/projects/${targetId}`
@@ -662,34 +708,48 @@ export function App() {
         setActiveProject(fullRes.project);
         setIsReadOnlyShare(false);
         setConflictServerVersion(null);
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(ACTIVE_CLOUD_ID_KEY, targetId);
+          }
+        } catch {}
       }
     } catch {
       // ignore
     }
   }
 
-  // Persist to localStorage in guest mode or auto-sync to cloud when logged in
+  // Persist to localStorage for uncommitted/demo/guest workspaces or track active cloud project
   function updateProject(mutator: (prev: ProjectPayload) => ProjectPayload,allowResetReadOnly = false) {
     if (isReadOnlyShare && !allowResetReadOnly) return;
 
     setActiveProject((prev) => {
       const next = mutator(prev);
-      if (!user) {
+      if (!next.id) {
         const updatedGuest: StoredGuestState = {
           client_project_uuid: guestState.client_project_uuid,
           is_dirty: true,
           project: {
             ...next,
-            parts: next.parts.slice(0, GUEST_MAX_PARTS),
+            parts: user ? next.parts : next.parts.slice(0, GUEST_MAX_PARTS),
           },
         };
         setGuestState(updatedGuest);
         try {
-          localStorage.setItem(GUEST_STORAGE_KEY, JSON.stringify(updatedGuest));
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(GUEST_STORAGE_KEY, JSON.stringify(updatedGuest));
+            localStorage.removeItem(ACTIVE_CLOUD_ID_KEY);
+          }
         } catch {
           // ignore storage quota errors
         }
         return updatedGuest.project;
+      } else {
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(ACTIVE_CLOUD_ID_KEY, next.id);
+          }
+        } catch {}
       }
       return next;
     });
@@ -842,9 +902,6 @@ export function App() {
         vendor_profiles: [],
       };
       updateProject(() => blank, true);
-      try {
-        localStorage.removeItem(GUEST_STORAGE_KEY);
-      } catch {}
       setStatusBanner({ type: 'info', text: 'Project cleared.' });
     }
   }
@@ -1295,6 +1352,11 @@ export function App() {
     await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
     setUser(null);
     setCloudProjects([]);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(ACTIVE_CLOUD_ID_KEY);
+      }
+    } catch {}
     const freshGuest = loadInitialGuestState();
     setGuestState(freshGuest);
     setActiveProject(freshGuest.project);

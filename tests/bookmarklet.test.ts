@@ -341,5 +341,15 @@ describe('Feature 2: Universal Part & Price Capture Bookmarklet & Confidence-Sco
       // Verify no open-redirect or dangerous target
       expect(href).not.toContain('noopener=no');
     });
+
+    it('parses as valid JavaScript without syntax errors or breaking single-line comments', () => {
+      const href = buildBookmarkletHref('user_install_key_xyz123');
+      const jsCode = href.replace(/^javascript:/, '');
+      // Must compile cleanly with Function constructor without throwing SyntaxError
+      expect(() => new Function(jsCode)).not.toThrow();
+      // Ensure no single-line comments remain that could swallow syntax
+      expect(jsCode).not.toContain('// 1. JSON-LD');
+      expect(jsCode).not.toContain('// 2. Domain Adapters');
+    });
   });
 });
