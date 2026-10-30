@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import fs from 'node:fs';
 import path from 'node:path';
 import { App } from '../src/client/App.js';
+import { OnboardingTour, TOUR_STEPS, TUTORIAL_COMPLETED_KEY } from '../src/client/OnboardingTour.js';
 
 describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet', () => {
   beforeEach(() => {
@@ -314,6 +315,32 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     expect(treeText).toContain('No vendor offerings in this project yet.');
     expect(treeText).toContain('No vendors in this project yet.');
     expect(treeText).toContain('No vendor orders selected yet.');
+
+    // 8. Click "Tour / Guide" button, step to Step 5 (Tab 2) and Step 8 (Tab 3), and verify automatic tab switching
+    const startTourBtn = findNode(tree, (el) => el.props.id === 'start-tour-btn')!;
+    (startTourBtn.props.onClick as () => void)();
+    tree = renderInteractiveApp();
+
+    const tourEl = findNode(tree, (el) => el.type === OnboardingTour)!;
+    expect(tourEl.props.isOpen).toBe(true);
+    expect(tourEl.props.stepIndex).toBe(0);
+
+    // Advance to Step 5 (index 4 -> Tab 2: Vendor Offerings)
+    (tourEl.props.onStepChange as (idx: number, step: (typeof TOUR_STEPS)[number]) => void)(4, TOUR_STEPS[4]);
+    tree = renderInteractiveApp();
+    expect(findNode(tree, (el) => el.props.id === 'tab-matrix')!.props['aria-selected']).toBe(true);
+
+    // Advance to Step 8 (index 7 -> Tab 3: Optimal Purchase Plan)
+    const tourEl2 = findNode(tree, (el) => el.type === OnboardingTour)!;
+    (tourEl2.props.onStepChange as (idx: number, step: (typeof TOUR_STEPS)[number]) => void)(7, TOUR_STEPS[7]);
+    tree = renderInteractiveApp();
+    expect(findNode(tree, (el) => el.props.id === 'tab-plan')!.props['aria-selected']).toBe(true);
+
+    // Close the tour
+    const tourEl3 = findNode(tree, (el) => el.type === OnboardingTour)!;
+    (tourEl3.props.onClose as () => void)();
+    tree = renderInteractiveApp();
+    expect(findNode(tree, (el) => el.type === OnboardingTour)!.props.isOpen).toBe(false);
   });
 
   it('persists cleared and PC demo workspaces in localStorage so page refresh does not revert to brake demo', () => {
@@ -386,5 +413,79 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     expect(htmlPc).toContain('AM5 SFF Workstation Upgrade');
     expect(htmlPc).toContain('AMD Ryzen 7 9700X');
     expect(htmlPc).not.toContain('330mm Vented Front Brake Rotor');
+  });
+
+  it('auto-starts the 9-step First-Time User Guide on initial visit, suppresses after completion, and renders directional arrows and glow CSS', () => {
+    const store = new Map<string, string>();
+    const mockStorage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, val: string) => store.set(key, val),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+    };
+    (globalThis as unknown as { localStorage: typeof mockStorage }).localStorage = mockStorage;
+
+    // 1. Fresh first-time visitor -> Tour auto-opens on Step 1 (Welcome splash)
+    const htmlFirstVisit = renderToStaticMarkup(React.createElement(App));
+    expect(htmlFirstVisit).toContain('id="start-tour-btn"');
+    expect(htmlFirstVisit).toContain('Tour / Guide');
+    expect(htmlFirstVisit).toContain('id="priceit-onboarding-tour"');
+    expect(htmlFirstVisit).toContain('popover="manual"');
+    expect(htmlFirstVisit).toContain('STEP 1 OF 9');
+    expect(htmlFirstVisit).toContain('Welcome to PriceIt Workshop');
+
+    // Verify all 8 target data-tour attributes are present in the workspace markup
+    expect(htmlFirstVisit).toContain('data-tour="presets-bar"');
+    expect(htmlFirstVisit).toContain('data-tour="bom-add-form"');
+    expect(htmlFirstVisit).toContain('data-tour="bookmarklet-btn"');
+    expect(htmlFirstVisit).toContain('data-tour="offering-add-form"');
+    expect(htmlFirstVisit).toContain('data-tour="coverage-matrix"');
+    expect(htmlFirstVisit).toContain('data-tour="vendor-shipping-rules"');
+    expect(htmlFirstVisit).toContain('data-tour="optimal-plan-orders"');
+    expect(htmlFirstVisit).toContain('data-tour="share-export-btn"');
+
+    // 2. Returning visitor who completed the tutorial -> Tour does NOT auto-open
+    mockStorage.setItem(TUTORIAL_COMPLETED_KEY, 'true');
+    const htmlCompleted = renderToStaticMarkup(React.createElement(App));
+    expect(htmlCompleted).not.toContain('id="priceit-onboarding-tour"');
+
+    // 3. Tethered step (Step 2) renders the directional caret arrow, Highlighted pointer pill, Back, Next, and Close buttons
+    const htmlStep2 = renderToStaticMarkup(
+      React.createElement(OnboardingTour, {
+        isOpen: true,
+        stepIndex: 1,
+        onStepChange: () => {},
+        onClose: () => {},
+      })
+    );
+    expect(htmlStep2).toContain('STEP 2 OF 9');
+    expect(htmlStep2).toContain('Project Presets &amp; Workspace Controls');
+    expect(htmlStep2).toContain('tour-arrow');
+    expect(htmlStep2).toContain('tour-arrow-diamond');
+    expect(htmlStep2).toContain('Highlighted');
+    expect(htmlStep2).toContain('Back');
+    expect(htmlStep2).toContain('Next');
+    expect(htmlStep2).toContain('Close');
+
+    // 4. Final step (Step 9) renders "Finish Tour" button
+    const htmlStep9 = renderToStaticMarkup(
+      React.createElement(OnboardingTour, {
+        isOpen: true,
+        stepIndex: TOUR_STEPS.length - 1,
+        onStepChange: () => {},
+        onClose: () => {},
+      })
+    );
+    expect(htmlStep9).toContain('STEP 9 OF 9');
+    expect(htmlStep9).toContain('Finish Tour');
+
+    // 5. Verify CSS rules for pulsing glow and modern-web-guidance popover/anchor rules
+    const cssPath = path.resolve(process.cwd(), 'src/client/styles.css');
+    const css = fs.readFileSync(cssPath, 'utf8');
+    expect(css).toContain('@keyframes tour-pulse-glow');
+    expect(css).toContain('[data-tour-active="true"]');
+    expect(css).toContain('anchor-name: --tour-active-target');
+    expect(css).toContain('.tour-popover-card[popover]:is(:popover-open, .\\:popover-open)');
+    expect(css).toContain('@container anchored(fallback: flip-block)');
   });
 });

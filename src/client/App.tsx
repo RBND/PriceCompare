@@ -33,6 +33,7 @@ import {
   CheckCircle,
   Search,
   Loader2,
+  Compass,
 } from 'lucide-react';
 import {
   extractVendorFromUrl,
@@ -61,6 +62,7 @@ import { ShareExportModal } from './ShareExportModal.js';
 import { BookmarkletModal } from './BookmarkletModal.js';
 import { BookmarkletConfirmationModal } from './BookmarkletConfirmationModal.js';
 import { BookmarkletUndoToast } from './BookmarkletUndoToast.js';
+import { OnboardingTour, TUTORIAL_COMPLETED_KEY, type TourStep } from './OnboardingTour.js';
 import {
   BookmarkletPayloadSchema,
   sanitizeIncomingBookmarkletPayload,
@@ -181,6 +183,31 @@ export function App() {
   // Share / Export Modal & Bookmarklet State
   const [isShareExportModalOpen, setIsShareExportModalOpen] = useState(false);
   const [isBookmarkletModalOpen, setIsBookmarkletModalOpen] = useState(false);
+  const [isTourOpen, setIsTourOpen] = useState<boolean>(() => {
+    try {
+      if (typeof window !== 'undefined' && window.location) {
+        const path = window.location.pathname || '/';
+        const search = window.location.search || '';
+        const hash = window.location.hash || '';
+        if (
+          path.startsWith('/share/') ||
+          path.startsWith('/admin') ||
+          path.startsWith('/privacy') ||
+          path.startsWith('/terms') ||
+          search.includes('share=') ||
+          hash.includes('import_part=') ||
+          window.name === 'priceit_capture_window'
+        ) {
+          return false;
+        }
+      }
+      if (typeof localStorage !== 'undefined') {
+        return localStorage.getItem(TUTORIAL_COMPLETED_KEY) !== 'true';
+      }
+    } catch {}
+    return false;
+  });
+  const [tourStepIndex, setTourStepIndex] = useState(0);
   const [installKey, setInstallKey] = useState<string>(() => {
     try {
       if (typeof localStorage !== 'undefined') {
@@ -389,6 +416,31 @@ export function App() {
     }
   }
 
+  function handleStartTour() {
+    setTourStepIndex(0);
+    setActiveTab('bom');
+    setIsTourOpen(true);
+  }
+
+  function handleCloseTour() {
+    setIsTourOpen(false);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(TUTORIAL_COMPLETED_KEY, 'true');
+      }
+    } catch {}
+  }
+
+  function handleTourStepChange(nextIndex: number, step: TourStep) {
+    setTourStepIndex(nextIndex);
+    if (step.tab && step.tab !== activeTab) {
+      setActiveTab(step.tab);
+    }
+    if (step.expandVendorSection) {
+      setIsVendorSectionOpen(true);
+    }
+  }
+
   // Auth modal state
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authEmail, setAuthEmail] = useState('');
@@ -496,6 +548,7 @@ export function App() {
     const shareToken = pathMatch ? pathMatch[1] : params.get('share');
 
     if (shareToken) {
+      setIsTourOpen(false);
       fetch(`/api/shares/${encodeURIComponent(shareToken)}`)
         .then(async (r) => {
           const data = await r.json().catch(() => ({}));
@@ -522,6 +575,7 @@ export function App() {
       .then(async (data) => {
         if (data.user) {
           setUser(data.user);
+          setIsTourOpen(false);
           await refreshCloudProjectsAndSelect(shareToken ? false : true);
         }
       })
@@ -3219,7 +3273,7 @@ export function App() {
           <div className="h-4 w-[1px]" style={{ backgroundColor: 'var(--border-subtle)' }} />
 
           {/* Preset / Cloud Project Switcher */}
-          <div className="flex items-center gap-1.5">
+          <div data-tour="presets-bar" className="flex items-center gap-1.5">
             {user && cloudProjects.length > 0 && (
               <div className="flex items-center gap-1">
                 <select
@@ -3363,6 +3417,7 @@ export function App() {
 
           <a
             ref={bookmarkletAnchorRef}
+            data-tour="bookmarklet-btn"
             onClick={(e) => {
               e.preventDefault();
               setIsBookmarkletModalOpen(true);
@@ -3431,6 +3486,7 @@ export function App() {
 
           <button
             type="button"
+            data-tour="share-export-btn"
             onClick={() => setIsShareExportModalOpen(true)}
             className="h-[26px] px-2 text-xs border inline-flex items-center gap-1 cursor-pointer box-border"
             style={{
@@ -3442,6 +3498,24 @@ export function App() {
             title="Share Link, Copy Markdown/Reddit, Print PDF, or Export CSV"
           >
             <Share2 className="w-3.5 h-3.5 text-[var(--accent-sky)]" /> Share / Export
+          </button>
+
+          <button
+            id="start-tour-btn"
+            type="button"
+            onClick={handleStartTour}
+            className="h-[26px] px-2 text-xs border inline-flex items-center gap-1 cursor-pointer box-border hover:bg-[var(--bg-hover)]"
+            style={{
+              height: '26px',
+              boxSizing: 'border-box',
+              backgroundColor: isTourOpen ? 'var(--accent-amber-bg)' : 'var(--bg-elevated)',
+              borderColor: isTourOpen ? 'var(--accent-amber)' : 'var(--border-subtle)',
+              color: isTourOpen ? 'var(--accent-amber)' : 'var(--text-primary)',
+            }}
+            title="Open Interactive Feature Tour & User Guide"
+            aria-label="Open Interactive Feature Tour & User Guide"
+          >
+            <Compass className="w-3.5 h-3.5 text-[var(--accent-amber)]" /> Tour / Guide
           </button>
 
           <button
@@ -3929,6 +4003,7 @@ export function App() {
             {/* Rapid Keyboard-First BOM Entry Bar at Top of Tab 1 */}
             {!isReadOnlyShare && (
               <form
+                data-tour="bom-add-form"
                 onSubmit={handleAddPart}
                 className="no-print p-3 border-b flex flex-wrap items-center gap-2"
                 style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
@@ -4255,6 +4330,7 @@ export function App() {
             {/* Top Entry Bar: Add Vendor Offering or Multi-Part Bundle Kit */}
             {!isReadOnlyShare && (
               <form
+                data-tour="offering-add-form"
                 onSubmit={handleAddOffering}
                 className="p-3 border-b flex flex-col gap-2.5"
                 style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
@@ -4429,6 +4505,7 @@ export function App() {
             </div>
 
             <div
+              data-tour="coverage-matrix"
               className="table-wrapper"
               tabIndex={0}
               role="region"
@@ -4718,6 +4795,7 @@ export function App() {
 
           {/* Inline Collapsible Vendor Shipping, Free-Shipping Minimums & Tax Rules Panel */}
           <details
+            data-tour="vendor-shipping-rules"
             open={isVendorSectionOpen}
             onToggle={(e) => setIsVendorSectionOpen((e.currentTarget as HTMLDetailsElement).open)}
             className="workshop-panel border"
@@ -4872,6 +4950,7 @@ export function App() {
             {/* Left Column (7 cols): Itemized Vendor Orders grouped by retailer */}
             <div className="lg:col-span-7 flex flex-col gap-4">
               <section
+                data-tour="optimal-plan-orders"
                 className="workshop-panel border"
                 style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-strong)' }}
               >
@@ -6717,6 +6796,14 @@ export function App() {
           }
         }}
         onDismiss={() => setBookmarkletToast(null)}
+      />
+
+      {/* Interactive First-Time User Guide & Feature Tour */}
+      <OnboardingTour
+        isOpen={isTourOpen}
+        stepIndex={tourStepIndex}
+        onStepChange={handleTourStepChange}
+        onClose={handleCloseTour}
       />
     </div>
   );

@@ -227,6 +227,120 @@ dialog.workshop-dialog::backdrop {
   backdrop-filter: blur(2px);
 }
 
+/* Persistent Onboarding App Tour & Position-Aware Directional Arrows
+   (per modern-web-guidance: persistent-app-tours & position-aware-tooltips) */
+@keyframes tour-pulse-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px var(--accent-amber),
+      0 0 18px 4px color-mix(in oklch, var(--accent-amber) 45%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px var(--accent-amber),
+      0 0 28px 9px color-mix(in oklch, var(--accent-amber) 72%, transparent);
+  }
+}
+
+@keyframes tour-pointer-bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+[data-tour-active="true"],
+.tour-target-glow {
+  anchor-name: --tour-active-target;
+  position: relative;
+  z-index: 40;
+  outline: 2px solid var(--accent-amber) !important;
+  outline-offset: 2px;
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 2px var(--accent-amber),
+    0 0 20px 5px color-mix(in oklch, var(--accent-amber) 50%, transparent);
+
+  @media (prefers-reduced-motion: no-preference) {
+    animation: tour-pulse-glow 1.9s infinite ease-in-out;
+  }
+}
+
+.tour-popover-card {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1.5px solid var(--accent-amber);
+  padding: 0;
+  overflow: visible;
+  box-shadow:
+    0 20px 40px -8px rgba(0, 0, 0, 0.65),
+    0 0 0 1px color-mix(in oklch, var(--accent-amber) 35%, transparent);
+  border-radius: 3px;
+  container-type: anchored;
+  position-try-fallbacks: flip-block, flip-inline;
+}
+
+.tour-popover-card[popover]:is(:popover-open, .\:popover-open) {
+  display: block;
+}
+
+.tour-arrow {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.tour-arrow-bottom {
+  top: -9px;
+}
+
+.tour-arrow-top {
+  bottom: -9px;
+}
+
+.tour-arrow-diamond {
+  width: 14px;
+  height: 14px;
+  margin: 0 auto;
+  transform: rotate(45deg);
+  background: var(--accent-amber-bg);
+  border-top: 1.5px solid var(--accent-amber);
+  border-left: 1.5px solid var(--accent-amber);
+}
+
+.tour-arrow-top .tour-arrow-diamond {
+  background: var(--bg-elevated);
+  border-top: none;
+  border-left: none;
+  border-right: 1.5px solid var(--accent-amber);
+  border-bottom: 1.5px solid var(--accent-amber);
+}
+
+@container anchored(fallback: flip-block) {
+  .tour-popover-content .tour-arrow-bottom {
+    top: auto;
+    bottom: -9px;
+  }
+  .tour-popover-content .tour-arrow-bottom .tour-arrow-diamond {
+    background: var(--bg-elevated);
+    border-top: none;
+    border-left: none;
+    border-right: 1.5px solid var(--accent-amber);
+    border-bottom: 1.5px solid var(--accent-amber);
+  }
+}
+
+.tour-pointer-pill {
+  @media (prefers-reduced-motion: no-preference) {
+    animation: tour-pointer-bounce 1.4s infinite ease-in-out;
+  }
+}
+
 /* @media print PDF Datasheet Styling */
 @media print {
   :root {
