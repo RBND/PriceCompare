@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   BookmarkletPayloadSchema,
   normalizePartNumber,
+  extractPartNumberFromTitle,
+  sanitizeIncomingBookmarkletPayload,
   scoreBomMatch,
   evaluateImportConfidence,
   applyBookmarkletImportToProject,
@@ -10,6 +14,7 @@ import {
   type BookmarkletPayload,
   type VerifiedBookmarkletCommit,
 } from '../src/shared/bookmarklet.js';
+import { BookmarkletConfirmationModal } from '../src/client/BookmarkletConfirmationModal.js';
 import type { Part, ProjectPayload } from '../src/shared/types.js';
 
 describe('Feature 2: Universal Part & Price Capture Bookmarklet & Confidence-Scored Receiver', () => {
@@ -52,6 +57,68 @@ describe('Feature 2: Universal Part & Price Capture Bookmarklet & Confidence-Sco
       expect(normalizePartNumber('br-900-a')).toBe('BR900A');
       expect(normalizePartNumber(' FGR 7 DQP ')).toBe('FGR7DQP');
       expect(normalizePartNumber(null)).toBe('');
+    });
+
+    it('replaces eBay vehicle model strings ("CHEVY CORVETTE") with the actual OEM part number ("84453011")', () => {
+      expect(
+        extractPartNumberFromTitle(
+          '2015 Chevrolet Corvette Stingray Rear Right Quarter Panel Blue 84453011 OEM'
+        )
+      ).toBe('84453011');
+
+      const incoming: BookmarkletPayload = {
+        url: 'https://www.ebay.com/itm/128085879680',
+        canonicalUrl: 'https://www.ebay.com/itm/128085879680',
+        vendorHost: 'ebay.com',
+        partName: '2015 Chevrolet Corvette Stingray Rear Right Quarter Panel Blue 84453011 OEM',
+        partNumber: 'CHEVY CORVETTE',
+        vendorSku: '',
+        brand: 'CHEVROLET',
+        price: 580,
+        currency: 'USD',
+        packageYield: 1,
+        bundleKeywordsFound: [],
+        isLikelyBundleOrPack: false,
+        shippingCost: 0,
+        freeShippingDetected: false,
+        shippingNote: '',
+        inStock: true,
+        extractionSource: ['json-ld'],
+        capturedAt: Date.now(),
+        installKey: 'key_123',
+      };
+
+      const sanitized = sanitizeIncomingBookmarkletPayload(incoming);
+      expect(sanitized.partNumber).toBe('84453011');
+      expect(sanitized.vendorSku).toBe('128085879680');
+    });
+
+    it('replaces Amazon ASIN ("B0DKFMSMYK") in partNumber with the actual model/part number ("9800X3D") while keeping ASIN in vendorSku', () => {
+      const incoming: BookmarkletPayload = {
+        url: 'https://www.amazon.com/AMD-9800X3D-16-Thread-Desktop-Processor/dp/B0DKFMSMYK',
+        canonicalUrl: 'https://www.amazon.com/AMD-9800X3D-16-Thread-Desktop-Processor/dp/B0DKFMSMYK',
+        vendorHost: 'amazon.com',
+        partName: 'AMD Ryzen 7 9800X3D 8-Core, 16-Thread Desktop Processor',
+        partNumber: 'B0DKFMSMYK',
+        vendorSku: 'B0DKFMSMYK',
+        brand: 'AMD',
+        price: 479,
+        currency: 'USD',
+        packageYield: 1,
+        bundleKeywordsFound: [],
+        isLikelyBundleOrPack: false,
+        shippingCost: 0,
+        freeShippingDetected: true,
+        shippingNote: '',
+        inStock: true,
+        extractionSource: ['adapter:amazon'],
+        capturedAt: Date.now(),
+        installKey: 'key_123',
+      };
+
+      const sanitized = sanitizeIncomingBookmarkletPayload(incoming);
+      expect(sanitized.partNumber).toBe('9800X3D');
+      expect(sanitized.vendorSku).toBe('B0DKFMSMYK');
     });
 
     const sampleBomPart: Part = {
@@ -328,6 +395,28 @@ describe('Feature 2: Universal Part & Price Capture Bookmarklet & Confidence-Sco
       const mapping = updated.bundle_mappings.find((bm) => bm.offering_id === newOffering?.id);
       expect(mapping?.part_id).toBe(newPart?.id);
     });
+
+    it('preserves project version on client mutation so server optimistic concurrency check does not throw 409', () => {
+      const cloudProject: ProjectPayload = {
+        ...baseProject,
+        id: 'proj_cloud_1',
+        version: 3,
+      };
+      const commit: VerifiedBookmarkletCommit = {
+        bomAction: 'CREATE_NEW',
+        targetBomPartId: null,
+        partName: 'Cabin Air Filter',
+        partNumber: 'CAF-99',
+        price: 15.0,
+        packageYield: 1,
+        shippingCost: 0,
+        vendorName: 'RockAuto',
+        referenceUrl: 'https://rockauto.com/caf99',
+      };
+
+      const updated = applyBookmarkletImportToProject(cloudProject, commit);
+      expect(updated.version).toBe(3);
+    });
   });
 
   describe('Bookmarklet Code Generation', () => {
@@ -350,6 +439,49 @@ describe('Feature 2: Universal Part & Price Capture Bookmarklet & Confidence-Sco
       // Ensure no single-line comments remain that could swallow syntax
       expect(jsCode).not.toContain('// 1. JSON-LD');
       expect(jsCode).not.toContain('// 2. Domain Adapters');
+    });
+
+    it('checks "+ Create as New BOM Part" and disables "Attach as Alternate Vendor Offering" when BOM has 0 existing parts', () => {
+      const incoming: BookmarkletPayload = {
+        url: 'https://www.ebay.com/itm/123456',
+        canonicalUrl: 'https://www.ebay.com/itm/123456',
+        vendorHost: 'ebay.com',
+        partName: '2015 Chevrolet Corvette Stingray Rear Right Quarter Panel Blue 84453011 OEM',
+        partNumber: 'CHEVY CORVETTE',
+        vendorSku: '',
+        brand: 'OEM',
+        price: 580,
+        currency: 'USD',
+        packageYield: 1,
+        bundleKeywordsFound: [],
+        isLikelyBundleOrPack: false,
+        shippingCost: 0,
+        freeShippingDetected: true,
+        shippingNote: '',
+        inStock: true,
+        extractionSource: ['json-ld'],
+        capturedAt: Date.now(),
+        installKey: 'key_123',
+      };
+
+      const html = renderToStaticMarkup(
+        React.createElement(BookmarkletConfirmationModal, {
+          isOpen: true,
+          incoming,
+          existingBomParts: [],
+          reasonsToConfirm: [],
+          initialTargetBomPartId: null,
+          isGuestFull: false,
+          onCommit: () => {},
+          onCancel: () => {},
+        })
+      );
+
+      // ATTACH_EXISTING must be disabled and NOT checked
+      expect(html).toContain('<input type="radio" disabled="" name="bomAction" value="ATTACH_EXISTING"/>');
+
+      // CREATE_NEW must be checked and NOT disabled
+      expect(html).toContain('<input type="radio" name="bomAction" checked="" value="CREATE_NEW"/>');
     });
   });
 });

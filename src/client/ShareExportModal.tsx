@@ -427,7 +427,7 @@ export function ShareExportModal({
           {activeTab === 'csv' && (
             <div className="space-y-4">
               <p className="text-[var(--text-secondary)] leading-relaxed">
-                Download a sanitized CSV spreadsheet containing the full BOM, optimal vendor orders, and bundle savings. Cells starting with dangerous prefixes (<code className="text-amber-400">= + - @</code>) are securely escaped.
+                Download a sanitized CSV spreadsheet containing the full BOM, optimal vendor orders, and bundle savings. Cells starting with dangerous prefixes (<code className="text-[var(--accent-amber)] font-semibold">= + - @</code>) are securely escaped.
               </p>
 
               <div className="p-4 bg-[var(--bg-base)] border border-[var(--border-subtle)] rounded flex items-center justify-between">

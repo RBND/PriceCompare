@@ -11,6 +11,9 @@ services:
       - NODE_ENV=production
       - PORT=28085
       - DATABASE_PATH=/app/data/priceit.db
+      - EBAY_CLIENT_ID=${EBAY_CLIENT_ID:-}
+      - EBAY_CLIENT_SECRET=${EBAY_CLIENT_SECRET:-}
+      - EBAY_ENV=${EBAY_ENV:-production}
     volumes:
       - ./data:/app/data
     healthcheck:

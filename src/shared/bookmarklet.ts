@@ -123,6 +123,128 @@ export function normalizePartNumber(pn: string | null | undefined): string {
     .replace(/[^A-Z0-9]/g, '');
 }
 
+export function isAmazonAsin(val: string | null | undefined): boolean {
+  const trimmed = String(val || '').trim();
+  return /^B0[A-Z0-9]{8}$/i.test(trimmed);
+}
+
+export function isInvalidOrModelPartNumber(pn: string | null | undefined): boolean {
+  const trimmed = String(pn || '').trim();
+  if (!trimmed) return true;
+  if (
+    /^(does not apply|n\/a|none|not applicable|na|null|undefined|unbranded|oem|genuine|see description)$/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+  // Amazon ASINs (e.g. B0DKFMSMYK) are store catalog IDs (vendorSku), not manufacturer part numbers
+  if (isAmazonAsin(trimmed)) {
+    return true;
+  }
+  // Vehicle model names or generic words without any digits (e.g. "CHEVY CORVETTE") are not part numbers
+  if (!/\d/.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+export function extractPartNumberFromTitle(title: string | null | undefined): string {
+  const raw = String(title || '').trim();
+  if (!raw) return '';
+  const tokens = raw
+    .replace(/[()[\],/\\|]/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, ''))
+    .filter(Boolean);
+
+  let bestCandidate = '';
+  let bestScore = 0;
+
+  for (const tok of tokens) {
+    if (tok.length < 4 || tok.length > 22) continue;
+    if (!/^[A-Za-z0-9-]+$/.test(tok)) continue;
+    // Skip 4-digit years (1950-2039) or year ranges like 2014-2019, 14-19
+    if (/^(19[5-9]\d|20[0-3]\d)(-(19[5-9]\d|20[0-3]\d|\d{2}))?$/.test(tok)) continue;
+    // Skip Amazon ASINs
+    if (isAmazonAsin(tok)) continue;
+    // Skip common measurement/spec tokens like 330mm, 1000W, 12V, 8-Core, 16-Thread
+    if (
+      /^\d+(\.\d+)?(mm|cm|in|ft|kg|lb|lbs|oz|gb|tb|mb|mhz|ghz|khz|w|kw|v|kv|mah|ah|pc|pcs|pk|core|cores|thread|threads|pin|pins|bit|pack|set|way|ch)$/i.test(
+        tok
+      )
+    ) {
+      continue;
+    }
+    if (
+      /^(ddr\d|gddr\d\w*|pcie\d\w*|gen\d|usb\d\w*|wifi\d\w*|am[45]|lga\d+|atx|matx|itx|sff|oem|awd|fwd|rwd|4wd)$/i.test(
+        tok
+      )
+    ) {
+      continue;
+    }
+
+    const digitCount = (tok.match(/\d/g) || []).length;
+    const hasLetter = /[A-Za-z]/.test(tok);
+    if (!hasLetter && digitCount < 5) continue;
+    if (hasLetter && digitCount < 2) continue;
+
+    let score = digitCount * 2 + (hasLetter ? 4 : 0);
+    if (tok.length >= 6 && tok.length <= 16 && digitCount >= 4) {
+      score += 10;
+    }
+    if (tok.includes('-') && hasLetter && digitCount >= 3) {
+      score += 5;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = tok;
+    }
+  }
+
+  return bestCandidate;
+}
+
+export function sanitizeIncomingBookmarkletPayload(incoming: BookmarkletPayload): BookmarkletPayload {
+  const next = { ...incoming };
+  next.partName = next.partName
+    .replace(/\s*[|\-–—]\s*(eBay|Amazon\.com|Mouser|DigiKey|McMaster-Carr|Grainger|FCP Euro|Newegg|B&H Photo|Micro Center).*$/i, '')
+    .trim();
+
+  const isEbay =
+    next.vendorHost.toLowerCase().includes('ebay.') ||
+    next.url.toLowerCase().includes('ebay.');
+  const isAmazon =
+    next.vendorHost.toLowerCase().includes('amazon.') ||
+    next.url.toLowerCase().includes('amazon.');
+
+  if (isEbay && !next.vendorSku) {
+    const ebayMatch = next.url.match(/\/itm\/(?:[^/?#]+\/)?(\d{10,14})/);
+    if (ebayMatch) {
+      next.vendorSku = ebayMatch[1];
+    }
+  }
+
+  if (isAmazon && !next.vendorSku) {
+    const amMatch = next.url.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    if (amMatch) {
+      next.vendorSku = amMatch[1].toUpperCase();
+    }
+  }
+
+  // If Amazon bookmarklet fell back to setting partNumber = ASIN (vendorSku), clear it so we extract the real MPN/model
+  if (isAmazon && next.vendorSku && next.partNumber.toUpperCase() === next.vendorSku.toUpperCase()) {
+    next.partNumber = '';
+  }
+
+  if (isInvalidOrModelPartNumber(next.partNumber)) {
+    const fromTitle = extractPartNumberFromTitle(next.partName) || extractPartNumberFromTitle(next.url);
+    next.partNumber = fromTitle || '';
+  }
+
+  return next;
+}
+
 export function scoreBomMatch(incoming: BookmarkletPayload, bomItem: Part): number {
   const inPn = normalizePartNumber(incoming.partNumber);
   const inSku = normalizePartNumber(incoming.vendorSku);
@@ -279,6 +401,14 @@ export function applyBookmarkletImportToProject(
       sort_order: parts.length,
     };
     parts.push(newPart);
+  } else if (commit.partNumber && !isInvalidOrModelPartNumber(commit.partNumber)) {
+    const idx = parts.findIndex((p) => p.id === targetPartId);
+    if (idx >= 0 && (!parts[idx].part_number || isInvalidOrModelPartNumber(parts[idx].part_number))) {
+      parts[idx] = {
+        ...parts[idx],
+        part_number: commit.partNumber.slice(0, 100).trim(),
+      };
+    }
   }
 
   // Create offering in integer cents
@@ -337,7 +467,7 @@ export function applyBookmarkletImportToProject(
     offerings,
     bundle_mappings: bundleMappings,
     vendor_profiles: vendorProfiles,
-    version: (prev.version || 1) + 1,
+    version: prev.version || 1,
   };
 }
 
@@ -409,8 +539,8 @@ export function buildBookmarkletHref(installKey: string): string {
         for(var pi=0;pi<prods.length;pi++){
           var p=prods[pi];
           if(!res.partName&&p.name) res.partName=clean(p.name);
-          if(!res.partNumber&&p.mpn) res.partNumber=clean(p.mpn);
-          if(!res.partNumber&&p.model) res.partNumber=clean(p.model);
+          if(!res.partNumber&&p.mpn&&!/^(does not apply|n\\\/a|none|not applicable)$/i.test(clean(p.mpn))) res.partNumber=clean(p.mpn);
+          if(!res.partNumber&&p.model&&host.indexOf('ebay.')<0&&/[0-9]/.test(p.model)) res.partNumber=clean(p.model);
           if(!res.vendorSku&&p.sku) res.vendorSku=clean(p.sku);
           if(!res.brand&&p.brand) res.brand=clean(typeof p.brand==='string'?p.brand:p.brand.name);
           var offers=Array.isArray(p.offers)?p.offers:(p.offers&&p.offers.offers?p.offers.offers:(p.offers?[p.offers]:[]));
@@ -420,7 +550,7 @@ export function buildBookmarkletHref(installKey: string): string {
             var pr=parseMoney(o.price)||parseMoney(o.lowPrice);
             if(pr!==null&&(res.price===null||pr<res.price)) res.price=pr;
             if(!res.vendorSku&&o.sku) res.vendorSku=clean(o.sku);
-            if(!res.partNumber&&o.mpn) res.partNumber=clean(o.mpn);
+            if(!res.partNumber&&o.mpn&&!/^(does not apply|n\\\/a|none|not applicable)$/i.test(clean(o.mpn))) res.partNumber=clean(o.mpn);
             if(o.availability&&/OutOfStock|Discontinued/i.test(o.availability)) res.inStock=false;
           }
           res.extractionSource.push('json-ld');
@@ -435,6 +565,27 @@ export function buildBookmarkletHref(installKey: string): string {
       res.partName=res.partName||query(['#productTitle','#title']);
       var am=window.location.pathname.match(/\\/(?:dp|gp\\/product)\\/([A-Z0-9]{10})/i);
       if(am) res.vendorSku=am[1].toUpperCase();
+      var amRows=document.querySelectorAll('#productDetails_techSpec_section_1 tr,#productDetails_detailBullets_sections1 tr,#techSpecSoftlines_section_1 tr,table.prodDetTable tr,table.a-keyvalue tr,#poExpander tr');
+      var amPn='';
+      var amMod='';
+      for(var ari=0;ari<amRows.length;ari++){
+        var thEl=amRows[ari].querySelector('th,td:first-child');
+        var tdEl=amRows[ari].querySelector('td:last-child');
+        var th=clean(thEl?thEl.textContent:'').replace(/:$/,'');
+        var td=clean(tdEl?tdEl.textContent:'').replace(/[\\u200E\\u200F]/g,'').trim();
+        if(!td||/^B0[A-Z0-9]{8}$/i.test(td)) continue;
+        if(/^(Part Number|Mfr Part Number|Manufacturer Part Number|OEM Part Number)$/i.test(th)&&!amPn) amPn=td;
+        else if(/^(Item model number|Model Number)$/i.test(th)&&/[0-9]/.test(td)&&!amMod) amMod=td;
+      }
+      if(!amPn){
+        var amBuls=document.querySelectorAll('#detailBullets_feature_div li');
+        for(var abi=0;abi<amBuls.length;abi++){
+          var bt=clean(amBuls[abi].textContent).replace(/[\\u200E\\u200F]/g,'');
+          var bm=bt.match(/^(?:Part Number|Mfr Part Number|Manufacturer Part Number|Item model number)\\s*:\\s*(.+)$/i);
+          if(bm&&bm[1]&&!/^B0[A-Z0-9]{8}$/i.test(bm[1].trim())){amPn=bm[1].trim();break;}
+        }
+      }
+      if(amPn||amMod) res.partNumber=amPn||amMod;
       var prStr=query(['#corePriceDisplay_desktop_feature_div .a-price .a-offscreen','#corePrice_feature_div .a-price .a-offscreen','#price_inside_buybox','.a-price .a-offscreen']);
       if(parseMoney(prStr)!==null) res.price=parseMoney(prStr);
       var deliv=query(['#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE','#deliveryBlockMessage']);
@@ -474,6 +625,32 @@ export function buildBookmarkletHref(installKey: string): string {
         if(parseMoney(rpr)!==null) res.price=parseMoney(rpr);
       }
       res.extractionSource.push('adapter:rockauto');
+    } else if(host.indexOf('ebay.')>=0){
+      var ebm=window.location.pathname.match(/\\\/itm\\\/(?:[^\\\/]+\\\/)?([0-9]{10,14})/);
+      if(ebm) res.vendorSku=ebm[1];
+      var dls=document.querySelectorAll('dl.ux-labels-values,.ux-labels-values,[data-testid="ux-labels-values"]');
+      var ebPn='';
+      var ebAltPn='';
+      for(var di=0;di<dls.length;di++){
+        var lblEl=dls[di].querySelector('.ux-labels-values__labels,dt');
+        var valEl=dls[di].querySelector('.ux-labels-values__values,dd');
+        var lbl=clean(lblEl?lblEl.textContent:'').replace(/:$/,'');
+        var val=clean(valEl?valEl.textContent:'');
+        if(!val||/^(does not apply|n\\\/a|none|not applicable|see description)$/i.test(val)) continue;
+        if(/^(Manufacturer Part Number|OE\\\/OEM Part Number|MPN|Part Number)$/i.test(lbl)&&!ebPn) ebPn=val;
+        else if(/^(Interchange Part Number|Superseded Part Number)$/i.test(lbl)&&!ebAltPn) ebAltPn=val;
+        else if(/^Brand$/i.test(lbl)&&!res.brand) res.brand=val;
+      }
+      if(ebPn||ebAltPn) res.partNumber=ebPn||ebAltPn;
+      var ebPr=query(['.x-price-primary span','.x-bin-price__content span']);
+      if(res.price===null&&parseMoney(ebPr)!==null) res.price=parseMoney(ebPr);
+      var ebSh=query(['.ux-labels-values--shipping .ux-labels-values__values']);
+      if(ebSh){
+        res.shippingNote=ebSh.slice(0,180);
+        if(/free\\s+(shipping|delivery)/i.test(ebSh)){res.shippingCost=0;res.freeShippingDetected=true;}
+        else{var esm=ebSh.match(/\\$([0-9]+(?:\\.[0-9]{2})?)/);if(esm&&res.shippingCost===null)res.shippingCost=parseFloat(esm[1]);}
+      }
+      res.extractionSource.push('adapter:ebay');
     }
   }catch(_){}
 
@@ -486,7 +663,17 @@ export function buildBookmarkletHref(installKey: string): string {
   if(!res.partNumber) res.partNumber=query(['[itemprop="mpn"]','[itemprop="sku"]']);
 
   /* 4. Bundle/Pack Heuristics */
-  res.partName=res.partName.slice(0,250).replace(/\\s*[|\\-–—]\\s*(Amazon\\.com|Mouser|DigiKey|McMaster-Carr|Grainger|FCP Euro|Newegg|B&H Photo|Micro Center).*$/i,'').trim();
+  res.partName=res.partName.slice(0,250).replace(/\\s*[|\\-–—]\\s*(eBay|Amazon\\.com|Mouser|DigiKey|McMaster-Carr|Grainger|FCP Euro|Newegg|B&H Photo|Micro Center).*$/i,'').trim();
+  if(!res.partNumber||!/[0-9]/.test(res.partNumber)){
+    var tToks=res.partName.split(/\\s+/);
+    for(var ti=0;ti<tToks.length;ti++){
+      var tk=tToks[ti].replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g,'');
+      if(tk.length>=5&&tk.length<=20&&/^[A-Za-z0-9-]+$/.test(tk)&&!/^(19[5-9][0-9]|20[0-3][0-9])/.test(tk)){
+        var dc=(tk.match(/[0-9]/g)||[]).length;
+        if(dc>=4){res.partNumber=tk;break;}
+      }
+    }
+  }
   var pMatches=[/\\b(?:pack|set|box|lot)\\s+of\\s+([0-9]{1,4})\\b/i,/\\b([0-9]{1,3})\\s*-\\s*(?:pack|pk|pc|set)\\b/i,/\\(([0-9]{1,3})\\s*(?:pack|pk)\\)/i];
   for(var ki=0;ki<pMatches.length;ki++){
     var pm=res.partName.match(pMatches[ki]);
@@ -500,7 +687,8 @@ export function buildBookmarkletHref(installKey: string): string {
 
   /* 5. Safe Bounds */
   res.partName=res.partName.slice(0,200);
-  res.partNumber=(res.partNumber||res.vendorSku||'').slice(0,100);
+  var fallbackSku=(res.vendorSku&&!/^B0[A-Z0-9]{8}$/i.test(res.vendorSku)&&host.indexOf('ebay.')<0)?res.vendorSku:'';
+  res.partNumber=(res.partNumber||fallbackSku||'').slice(0,100);
 
   var payload=encodeURIComponent(JSON.stringify(res));
   window.open(ORIGIN+'/#import_part='+payload,'priceit_capture_window');

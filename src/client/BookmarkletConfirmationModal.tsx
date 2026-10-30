@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AlertTriangle, Check, X } from 'lucide-react';
 import type { Part } from '../shared/types.js';
-import type { BookmarkletPayload, VerifiedBookmarkletCommit } from '../shared/bookmarklet.js';
+import { isAmazonAsin, type BookmarkletPayload, type VerifiedBookmarkletCommit } from '../shared/bookmarklet.js';
 
 interface BookmarkletConfirmationModalProps {
   isOpen: boolean;
@@ -31,7 +31,9 @@ export function BookmarkletConfirmationModal({
     initialTargetBomPartId || existingBomParts[0]?.id || ''
   );
   const [partName, setPartName] = useState(incoming.partName || '');
-  const [partNumber, setPartNumber] = useState(incoming.partNumber || incoming.vendorSku || '');
+  const [partNumber, setPartNumber] = useState(
+    incoming.partNumber || (!isAmazonAsin(incoming.vendorSku) ? incoming.vendorSku : '') || ''
+  );
   const [priceStr, setPriceStr] = useState(
     incoming.price !== null && incoming.price !== undefined ? String(incoming.price) : ''
   );
@@ -44,6 +46,26 @@ export function BookmarkletConfirmationModal({
 
   const priceInputRef = useRef<HTMLInputElement>(null);
   const submitBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    setBomAction(
+      initialTargetBomPartId && existingBomParts.length > 0 ? 'ATTACH_EXISTING' : 'CREATE_NEW'
+    );
+    setTargetBomPartId(initialTargetBomPartId || existingBomParts[0]?.id || '');
+    setPartName(incoming.partName || '');
+    setPartNumber(
+      incoming.partNumber || (!isAmazonAsin(incoming.vendorSku) ? incoming.vendorSku : '') || ''
+    );
+    setPriceStr(
+      incoming.price !== null && incoming.price !== undefined ? String(incoming.price) : ''
+    );
+    setPackageYieldStr(String(incoming.packageYield || 1));
+    setShippingStr(
+      incoming.shippingCost !== null && incoming.shippingCost !== undefined
+        ? String(incoming.shippingCost)
+        : '0'
+    );
+  }, [incoming, initialTargetBomPartId]);
 
   useEffect(() => {
     if (isOpen) {
@@ -67,6 +89,13 @@ export function BookmarkletConfirmationModal({
 
   if (!isOpen) return null;
 
+  const effectiveBomAction: 'ATTACH_EXISTING' | 'CREATE_NEW' =
+    existingBomParts.length === 0
+      ? 'CREATE_NEW'
+      : isGuestFull
+        ? 'ATTACH_EXISTING'
+        : bomAction;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -75,8 +104,8 @@ export function BookmarkletConfirmationModal({
     const parsedShipping = parseFloat(shippingStr);
 
     onCommit({
-      bomAction: isGuestFull ? 'ATTACH_EXISTING' : bomAction,
-      targetBomPartId: bomAction === 'ATTACH_EXISTING' ? targetBomPartId : null,
+      bomAction: effectiveBomAction,
+      targetBomPartId: effectiveBomAction === 'ATTACH_EXISTING' ? targetBomPartId : null,
       partName: partName.trim() || 'Scraped Part',
       partNumber: partNumber.trim(),
       price: isNaN(parsedPrice) ? 0 : Math.max(0, parsedPrice),
@@ -125,14 +154,27 @@ export function BookmarkletConfirmationModal({
 
         {/* Warning Banner */}
         {reasonsToConfirm.length > 0 && (
-          <div className="p-3 bg-amber-950/30 border-b border-amber-900/50 text-amber-300 text-xs flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+          <div
+            className="p-3 border-b text-xs flex items-start gap-2"
+            style={{
+              backgroundColor: 'var(--accent-amber-bg)',
+              borderColor: 'var(--accent-amber-border)',
+              color: 'var(--accent-amber-text)',
+            }}
+          >
+            <AlertTriangle
+              className="w-4 h-4 shrink-0 mt-0.5"
+              style={{ color: 'var(--accent-amber)' }}
+            />
             <div className="space-y-0.5">
-              <strong className="block font-mono-tabular uppercase text-[10px] text-amber-400">
+              <strong
+                className="block font-mono-tabular uppercase text-[10px] font-bold"
+                style={{ color: 'var(--accent-amber)' }}
+              >
                 Verify Before Committing to Solver
               </strong>
               {reasonsToConfirm.map((r, i) => (
-                <div key={i} className="text-[11px] leading-tight">
+                <div key={i} className="text-[11px] leading-snug font-medium">
                   • {r}
                 </div>
               ))}
@@ -147,23 +189,35 @@ export function BookmarkletConfirmationModal({
               1. BOM Destination
             </label>
             <div className="flex gap-4">
-              <label className="flex items-center gap-1.5 cursor-pointer text-[var(--text-primary)]">
+              <label
+                className={`flex items-center gap-1.5 ${
+                  existingBomParts.length === 0
+                    ? 'opacity-45 cursor-not-allowed text-[var(--text-muted)]'
+                    : 'cursor-pointer text-[var(--text-primary)]'
+                }`}
+              >
                 <input
                   type="radio"
                   name="bomAction"
                   value="ATTACH_EXISTING"
-                  checked={bomAction === 'ATTACH_EXISTING' || existingBomParts.length === 0}
+                  checked={effectiveBomAction === 'ATTACH_EXISTING'}
                   onChange={() => setBomAction('ATTACH_EXISTING')}
                   disabled={existingBomParts.length === 0}
                 />
                 Attach as Alternate Vendor Offering
               </label>
-              <label className="flex items-center gap-1.5 cursor-pointer text-[var(--text-primary)]">
+              <label
+                className={`flex items-center gap-1.5 ${
+                  isGuestFull
+                    ? 'opacity-45 cursor-not-allowed text-[var(--text-muted)]'
+                    : 'cursor-pointer text-[var(--text-primary)] font-semibold'
+                }`}
+              >
                 <input
                   type="radio"
                   name="bomAction"
                   value="CREATE_NEW"
-                  checked={bomAction === 'CREATE_NEW' && existingBomParts.length > 0}
+                  checked={effectiveBomAction === 'CREATE_NEW'}
                   onChange={() => setBomAction('CREATE_NEW')}
                   disabled={isGuestFull}
                 />
@@ -171,7 +225,7 @@ export function BookmarkletConfirmationModal({
               </label>
             </div>
 
-            {bomAction === 'ATTACH_EXISTING' && existingBomParts.length > 0 && (
+            {effectiveBomAction === 'ATTACH_EXISTING' && existingBomParts.length > 0 && (
               <div className="mt-2">
                 <select
                   value={targetBomPartId}

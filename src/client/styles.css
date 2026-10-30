@@ -21,6 +21,8 @@
   /* Industrial Amber / Safety Orange + Emerald Ledger Accents */
   --accent-amber: light-dark(#b45309, #f59e0b);
   --accent-amber-bg: light-dark(#fef3c7, #3b2806);
+  --accent-amber-text: light-dark(#78350f, #fde68a);
+  --accent-amber-border: light-dark(#f59e0b, #78350f);
   --accent-emerald: light-dark(#047857, #10b981);
   --accent-emerald-bg: light-dark(#d1fae5, #063729);
   --accent-danger: light-dark(#b91c1c, #ef4444);

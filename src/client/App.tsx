@@ -63,6 +63,7 @@ import { BookmarkletConfirmationModal } from './BookmarkletConfirmationModal.js'
 import { BookmarkletUndoToast } from './BookmarkletUndoToast.js';
 import {
   BookmarkletPayloadSchema,
+  sanitizeIncomingBookmarkletPayload,
   evaluateImportConfidence,
   applyBookmarkletImportToProject,
   buildBookmarkletHref,
@@ -74,6 +75,7 @@ const GUEST_STORAGE_KEY = 'priceit_guest_project_v2';
 const GUEST_MAX_PARTS = 10;
 const ACTIVE_CLOUD_ID_KEY = 'priceit_active_cloud_id';
 const HAS_VISITED_KEY = 'priceit_has_visited';
+const BOOKMARKLET_COMMIT_STORAGE_KEY = 'priceit_last_bookmarklet_commit';
 
 interface StoredGuestState {
   client_project_uuid: string;
@@ -557,126 +559,356 @@ export function App() {
   }, [installKey]);
 
   // PriceIt Bookmarklet Receiver and Multi-Tab Synchronization Bus
+  const syncChannelRef = useRef<BroadcastChannel | null>(null);
+  const processedCommitIdsRef = useRef<Set<string>>(new Set());
+  const activeProjectRef = useRef(activeProject);
+  activeProjectRef.current = activeProject;
+  const guestStateRef = useRef(guestState);
+  guestStateRef.current = guestState;
+  const isReadOnlyShareRef = useRef(isReadOnlyShare);
+  isReadOnlyShareRef.current = isReadOnlyShare;
+  const pinnedBomPartIdRef = useRef(pinnedBomPartId);
+  pinnedBomPartIdRef.current = pinnedBomPartId;
+  const installKeyRef = useRef(installKey);
+  installKeyRef.current = installKey;
+  const userRef = useRef(user);
+  userRef.current = user;
+  const authLoadingRef = useRef(authLoading);
+  authLoadingRef.current = authLoading;
+
+  function applyRemoteBookmarkletCommit(commit: VerifiedBookmarkletCommit, commitId?: string) {
+    if (commitId) {
+      if (processedCommitIdsRef.current.has(commitId)) return;
+      processedCommitIdsRef.current.add(commitId);
+    }
+    const prev = activeProjectRef.current;
+    updateProject((p) => applyBookmarkletImportToProject(p, commit));
+    setBookmarkletToast({
+      id: commitId || `toast_${Date.now()}`,
+      vendorName: commit.vendorName,
+      price: commit.price,
+      packageYield: commit.packageYield,
+      prevProject: prev,
+    });
+  }
+
+  async function commitBookmarkletImport(finalCommit: VerifiedBookmarkletCommit) {
+    const commitId = makeClientId('bm-commit');
+    processedCommitIdsRef.current.add(commitId);
+    const prev = activeProjectRef.current;
+    const nextProject = applyBookmarkletImportToProject(prev, finalCommit);
+    updateProject(() => nextProject);
+    setPendingBookmarkletImport(null);
+
+    const message = {
+      type: 'PRICEIT_COMMIT_PART',
+      commitId,
+      payload: finalCommit,
+    };
+    if (syncChannelRef.current) {
+      syncChannelRef.current.postMessage(message);
+    } else if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        const tempChannel = new BroadcastChannel('priceit_bom_sync');
+        tempChannel.postMessage(message);
+        tempChannel.close();
+      } catch {}
+    }
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(
+          BOOKMARKLET_COMMIT_STORAGE_KEY,
+          JSON.stringify({
+            commitId,
+            payload: finalCommit,
+            timestamp: Date.now(),
+          })
+        );
+      }
+    } catch {}
+
+    const isPopupWindow = typeof window !== 'undefined' && window.name === 'priceit_capture_window';
+    if (!isPopupWindow) {
+      setBookmarkletToast({
+        id: commitId,
+        vendorName: finalCommit.vendorName,
+        price: finalCommit.price,
+        packageYield: finalCommit.packageYield,
+        prevProject: prev,
+      });
+    }
+
+    if (userRef.current && nextProject.id) {
+      const saved = await saveCloudProjectNow(nextProject);
+      if (saved && syncChannelRef.current) {
+        syncChannelRef.current.postMessage({
+          type: 'PRICEIT_CLOUD_PROJECT_SAVED',
+          projectId: saved.id,
+          version: saved.version,
+        });
+      }
+    }
+
+    if (isPopupWindow) {
+      setTimeout(() => window.close(), 250);
+    }
+  }
+
+  function processIncomingHashImport() {
+    if (authLoadingRef.current || typeof window === 'undefined' || !window.location) return;
+    const hash = window.location.hash;
+    if (!hash || !hash.includes('import_part=')) return;
+
+    const match = hash.match(/import_part=([^&]+)/);
+    if (!match) return;
+
+    if (window.history && typeof window.history.replaceState === 'function') {
+      window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+    }
+    try {
+      const raw = JSON.parse(decodeURIComponent(match[1]));
+      const parsed = BookmarkletPayloadSchema.safeParse(raw);
+      if (parsed.success) {
+        const incoming = sanitizeIncomingBookmarkletPayload(parsed.data);
+        const currentProject = activeProjectRef.current;
+        const isTrustedKey = incoming.installKey === installKeyRef.current;
+        const isGuestFull = !userRef.current && currentProject.parts.length >= GUEST_MAX_PARTS;
+        const evalResult = evaluateImportConfidence(
+          incoming,
+          currentProject.parts,
+          pinnedBomPartIdRef.current,
+          false,
+          isTrustedKey,
+          isGuestFull
+        );
+
+        if (
+          evalResult.decision === 'AUTO_ADD_TO_EXISTING' ||
+          evalResult.decision === 'AUTO_ADD_AS_NEW'
+        ) {
+          void commitBookmarkletImport({
+            bomAction:
+              evalResult.decision === 'AUTO_ADD_TO_EXISTING'
+                ? 'ATTACH_EXISTING'
+                : 'CREATE_NEW',
+            targetBomPartId: evalResult.targetBomPart?.id || null,
+            partName: incoming.partName,
+            partNumber: incoming.partNumber || incoming.vendorSku || '',
+            price: incoming.price || 0,
+            packageYield: incoming.packageYield || 1,
+            shippingCost: incoming.shippingCost || 0,
+            vendorName: incoming.vendorHost || 'Vendor',
+            referenceUrl: incoming.url,
+            vendorSku: incoming.vendorSku,
+            brand: incoming.brand,
+            shippingRuleNote: incoming.shippingNote,
+            inStock: incoming.inStock,
+          });
+        } else {
+          setPendingBookmarkletImport({
+            incoming,
+            reasons: evalResult.reasonsToConfirm,
+            targetPartId: evalResult.targetBomPart?.id || null,
+          });
+
+          // Enrich eBay and Amazon items via official eBay Buy Browse API (e.g., Manufacturer Part Number / OE/OEM Part Number & shipping)
+          const lowerHost = incoming.vendorHost.toLowerCase();
+          const lowerUrl = incoming.url.toLowerCase();
+          if (
+            (lowerHost.includes('ebay.') ||
+              lowerUrl.includes('ebay.') ||
+              lowerHost.includes('amazon.') ||
+              lowerUrl.includes('amazon.')) &&
+            typeof fetch === 'function'
+          ) {
+            fetch(
+              `/api/sourcing/ebay-item?url=${encodeURIComponent(incoming.url)}&title=${encodeURIComponent(incoming.partName)}&hintPn=${encodeURIComponent(incoming.partNumber)}`
+            )
+              .then((r) => (r.ok ? r.json() : null))
+              .then(
+                (
+                  ebayData: {
+                    itemId?: string;
+                    partNumber?: string;
+                    brand?: string;
+                    price?: number | null;
+                    shippingCost?: number | null;
+                  } | null
+                ) => {
+                  if (!ebayData) return;
+                  setPendingBookmarkletImport((prevPending) => {
+                    if (!prevPending || prevPending.incoming.url !== incoming.url) return prevPending;
+                    const enrichedIncoming: BookmarkletPayload = {
+                      ...prevPending.incoming,
+                      partNumber: ebayData.partNumber || prevPending.incoming.partNumber,
+                      brand: ebayData.brand || prevPending.incoming.brand,
+                      vendorSku: ebayData.itemId || prevPending.incoming.vendorSku,
+                      price:
+                        prevPending.incoming.price && prevPending.incoming.price > 0
+                          ? prevPending.incoming.price
+                          : (ebayData.price ?? prevPending.incoming.price),
+                      shippingCost:
+                        prevPending.incoming.shippingCost !== null &&
+                        prevPending.incoming.shippingCost !== undefined
+                          ? prevPending.incoming.shippingCost
+                          : (ebayData.shippingCost ?? null),
+                    };
+                    const reEval = evaluateImportConfidence(
+                      enrichedIncoming,
+                      activeProjectRef.current.parts,
+                      pinnedBomPartIdRef.current,
+                      false,
+                      isTrustedKey,
+                      !userRef.current && activeProjectRef.current.parts.length >= GUEST_MAX_PARTS
+                    );
+                    return {
+                      incoming: enrichedIncoming,
+                      reasons: reEval.reasonsToConfirm,
+                      targetPartId: reEval.targetBomPart?.id || prevPending.targetPartId,
+                    };
+                  });
+                }
+              )
+              .catch(() => {});
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse incoming bookmarklet payload:', e);
+    }
+  }
+
   useEffect(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const existingRaw = localStorage.getItem(BOOKMARKLET_COMMIT_STORAGE_KEY);
+        if (existingRaw) {
+          const existingParsed = JSON.parse(existingRaw) as { commitId?: string };
+          if (existingParsed && existingParsed.commitId) {
+            processedCommitIdsRef.current.add(existingParsed.commitId);
+          }
+        }
+      }
+    } catch {}
+
     const channel =
       typeof BroadcastChannel !== 'undefined'
         ? new BroadcastChannel('priceit_bom_sync')
         : null;
+    syncChannelRef.current = channel;
 
     if (channel) {
       channel.onmessage = (event) => {
         if (!event.data) return;
         if (event.data.type === 'PING_MAIN_TAB') {
-          channel.postMessage({
-            type: 'PONG_MAIN_TAB',
-            parts: activeProject.parts,
-            pinnedBomPartId,
-            guestCount: activeProject.parts.length,
-          });
-        } else if (event.data.type === 'PRICEIT_COMMIT_PART') {
-          const commit = event.data.payload as VerifiedBookmarkletCommit;
-          const prev = activeProject;
-          updateProject((p) => applyBookmarkletImportToProject(p, commit));
-          setBookmarkletToast({
-            id: `toast_${Date.now()}`,
-            vendorName: commit.vendorName,
-            price: commit.price,
-            packageYield: commit.packageYield,
-            prevProject: prev,
-          });
-        }
-      };
-    }
-
-    // Wait until auth loading has settled so we import into the actual resolved project
-    if (authLoading) {
-      return () => {
-        channel?.close();
-      };
-    }
-
-    // Check URL fragment hash for incoming import: #import_part=...
-    const hash = window.location.hash;
-    if (hash && hash.includes('import_part=')) {
-      const match = hash.match(/import_part=([^&]+)/);
-      if (match) {
-        window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
-        try {
-          const raw = JSON.parse(decodeURIComponent(match[1]));
-          const parsed = BookmarkletPayloadSchema.safeParse(raw);
-          if (parsed.success) {
-            const incoming = parsed.data;
-            const isTrustedKey = incoming.installKey === installKey;
-            const isGuestFull = !user && activeProject.parts.length >= GUEST_MAX_PARTS;
-            const evalResult = evaluateImportConfidence(
-              incoming,
-              activeProject.parts,
-              pinnedBomPartId,
-              false,
-              isTrustedKey,
-              isGuestFull
-            );
-
-            const isPopupWindow = window.name === 'priceit_capture_window';
-
-            const executeCommit = (finalCommit: VerifiedBookmarkletCommit) => {
-              const prev = activeProject;
-              updateProject((p) => applyBookmarkletImportToProject(p, finalCommit));
-              if (channel) {
-                channel.postMessage({ type: 'PRICEIT_COMMIT_PART', payload: finalCommit });
-              }
-              if (isPopupWindow) {
-                setTimeout(() => window.close(), 300);
-              } else {
-                setBookmarkletToast({
-                  id: `toast_${Date.now()}`,
-                  vendorName: finalCommit.vendorName,
-                  price: finalCommit.price,
-                  packageYield: finalCommit.packageYield,
-                  prevProject: prev,
-                });
-              }
-            };
-
-            if (
-              evalResult.decision === 'AUTO_ADD_TO_EXISTING' ||
-              evalResult.decision === 'AUTO_ADD_AS_NEW'
-            ) {
-              executeCommit({
-                bomAction:
-                  evalResult.decision === 'AUTO_ADD_TO_EXISTING'
-                    ? 'ATTACH_EXISTING'
-                    : 'CREATE_NEW',
-                targetBomPartId: evalResult.targetBomPart?.id || null,
-                partName: incoming.partName,
-                partNumber: incoming.partNumber || incoming.vendorSku || '',
-                price: incoming.price || 0,
-                packageYield: incoming.packageYield || 1,
-                shippingCost: incoming.shippingCost || 0,
-                vendorName: incoming.vendorHost || 'Vendor',
-                referenceUrl: incoming.url,
-                vendorSku: incoming.vendorSku,
-                brand: incoming.brand,
-                shippingRuleNote: incoming.shippingNote,
-                inStock: incoming.inStock,
-              });
-            } else {
-              setPendingBookmarkletImport({
-                incoming,
-                reasons: evalResult.reasonsToConfirm,
-                targetPartId: evalResult.targetBomPart?.id || null,
-              });
+          if (typeof window === 'undefined' || window.name !== 'priceit_capture_window') {
+            channel.postMessage({
+              type: 'PONG_MAIN_TAB',
+              project: activeProjectRef.current,
+              parts: activeProjectRef.current.parts,
+              pinnedBomPartId: pinnedBomPartIdRef.current,
+              guestCount: activeProjectRef.current.parts.length,
+            });
+          }
+        } else if (event.data.type === 'PONG_MAIN_TAB') {
+          if (typeof window !== 'undefined' && window.name === 'priceit_capture_window' && event.data.project) {
+            const incomingProj = event.data.project as ProjectPayload;
+            if (!activeProjectRef.current.id || incomingProj.id === activeProjectRef.current.id) {
+              setActiveProject(incomingProj);
+            }
+            if (event.data.pinnedBomPartId !== undefined) {
+              setPinnedBomPartId(event.data.pinnedBomPartId);
             }
           }
-        } catch (e) {
-          console.error('Failed to parse incoming bookmarklet payload:', e);
+        } else if (event.data.type === 'PRICEIT_COMMIT_PART') {
+          const commit = event.data.payload as VerifiedBookmarkletCommit;
+          applyRemoteBookmarkletCommit(commit, event.data.commitId);
+        } else if (event.data.type === 'PRICEIT_CLOUD_PROJECT_SAVED') {
+          if (
+            event.data.projectId &&
+            activeProjectRef.current.id === event.data.projectId &&
+            typeof event.data.version === 'number'
+          ) {
+            setActiveProject((prev) => ({ ...prev, version: event.data.version }));
+          }
         }
+      };
+
+      if (typeof window !== 'undefined' && window.name === 'priceit_capture_window') {
+        channel.postMessage({ type: 'PING_MAIN_TAB' });
       }
     }
 
-    return () => {
-      channel?.close();
+    const checkPendingStorageCommit = () => {
+      try {
+        if (typeof localStorage === 'undefined') return;
+        const raw = localStorage.getItem(BOOKMARKLET_COMMIT_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as {
+          commitId?: string;
+          payload?: VerifiedBookmarkletCommit;
+          timestamp?: number;
+        };
+        if (
+          parsed &&
+          parsed.commitId &&
+          parsed.payload &&
+          !processedCommitIdsRef.current.has(parsed.commitId) &&
+          (!parsed.timestamp || Date.now() - parsed.timestamp < 5 * 60 * 1000)
+        ) {
+          applyRemoteBookmarkletCommit(parsed.payload, parsed.commitId);
+        }
+      } catch {}
     };
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === BOOKMARKLET_COMMIT_STORAGE_KEY && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue) as {
+            commitId?: string;
+            payload?: VerifiedBookmarkletCommit;
+          };
+          if (parsed && parsed.payload) {
+            applyRemoteBookmarkletCommit(parsed.payload, parsed.commitId);
+          }
+        } catch {}
+      } else if (e.key === 'priceit_pinned_bom_part_id') {
+        setPinnedBomPartId(e.newValue || null);
+      }
+    };
+
+    const handleHashChange = () => {
+      processIncomingHashImport();
+    };
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('storage', handleStorage);
+      window.addEventListener('focus', checkPendingStorageCommit);
+      window.addEventListener('hashchange', handleHashChange);
+    }
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', checkPendingStorageCommit);
+    }
+
+    return () => {
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('storage', handleStorage);
+        window.removeEventListener('focus', checkPendingStorageCommit);
+        window.removeEventListener('hashchange', handleHashChange);
+      }
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('visibilitychange', checkPendingStorageCommit);
+      }
+      channel?.close();
+      syncChannelRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authLoading) {
+      processIncomingHashImport();
+    }
   }, [activeProject, pinnedBomPartId, installKey, user, authLoading]);
 
   async function refreshCloudProjectsAndSelect(selectFirst = false, preferredId?: string | null) {
@@ -700,11 +932,17 @@ export function App() {
         }
       } catch {}
 
-      const targetId = preferredId || (savedActiveId && listRes.projects.some((p) => p.id === savedActiveId) ? savedActiveId : (selectFirst && listRes.projects[0]?.id));
+      const canAutoSelectFirst = selectFirst && !guestStateRef.current.is_dirty;
+      const targetId =
+        preferredId ||
+        (savedActiveId && listRes.projects.some((p) => p.id === savedActiveId)
+          ? savedActiveId
+          : canAutoSelectFirst && listRes.projects[0]?.id);
       if (targetId) {
         const fullRes = await apiFetch<{ project: ProjectPayload & { share_token?: string | null } }>(
           `/api/projects/${targetId}`
         );
+        activeProjectRef.current = fullRes.project;
         setActiveProject(fullRes.project);
         setIsReadOnlyShare(false);
         setConflictServerVersion(null);
@@ -720,20 +958,22 @@ export function App() {
   }
 
   // Persist to localStorage for uncommitted/demo/guest workspaces or track active cloud project
-  function updateProject(mutator: (prev: ProjectPayload) => ProjectPayload,allowResetReadOnly = false) {
-    if (isReadOnlyShare && !allowResetReadOnly) return;
+  function updateProject(mutator: (prev: ProjectPayload) => ProjectPayload, allowResetReadOnly = false) {
+    if (isReadOnlyShareRef.current && !allowResetReadOnly) return;
 
     setActiveProject((prev) => {
       const next = mutator(prev);
       if (!next.id) {
         const updatedGuest: StoredGuestState = {
-          client_project_uuid: guestState.client_project_uuid,
+          client_project_uuid: guestStateRef.current.client_project_uuid,
           is_dirty: true,
           project: {
             ...next,
-            parts: user ? next.parts : next.parts.slice(0, GUEST_MAX_PARTS),
+            parts: userRef.current ? next.parts : next.parts.slice(0, GUEST_MAX_PARTS),
           },
         };
+        guestStateRef.current = updatedGuest;
+        activeProjectRef.current = updatedGuest.project;
         setGuestState(updatedGuest);
         try {
           if (typeof localStorage !== 'undefined') {
@@ -745,6 +985,7 @@ export function App() {
         }
         return updatedGuest.project;
       } else {
+        activeProjectRef.current = next;
         try {
           if (typeof localStorage !== 'undefined') {
             localStorage.setItem(ACTIVE_CLOUD_ID_KEY, next.id);
@@ -3389,15 +3630,9 @@ export function App() {
       >
         <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[280px]">
           <div className="flex flex-col flex-1 max-w-xl">
-            <label
-              htmlFor="project-title-input"
-              className="text-[10px] font-mono-tabular uppercase tracking-wider"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              PROJECT BILL OF MATERIALS
-            </label>
             <input
               id="project-title-input"
+              aria-label="Project Name"
               type="text"
               value={activeProject.name}
               disabled={isReadOnlyShare}
@@ -3907,10 +4142,10 @@ export function App() {
                                     <button
                                       type="button"
                                       onClick={() => handleOpenPartPurchase(part)}
-                                      className="text-[10px] text-left underline cursor-pointer"
+                                      className="text-[10px] text-left underline cursor-pointer whitespace-nowrap"
                                       style={{ color: 'var(--text-secondary)' }}
                                     >
-                                      + Mark Owned / Procured
+                                      Mark as Owned
                                     </button>
                                   )}
                                 </div>
@@ -3930,10 +4165,10 @@ export function App() {
                                     <button
                                       type="button"
                                       onClick={() => handleOpenPartPurchase(part)}
-                                      className="text-[10px] text-left underline cursor-pointer"
+                                      className="text-[10px] text-left underline cursor-pointer whitespace-nowrap"
                                       style={{ color: 'var(--text-secondary)' }}
                                     >
-                                      + Mark Owned / Procured
+                                      Mark as Owned
                                     </button>
                                   )}
                                 </div>
@@ -6454,19 +6689,7 @@ export function App() {
           initialTargetBomPartId={pendingBookmarkletImport.targetPartId}
           isGuestFull={!user && activeProject.parts.length >= GUEST_MAX_PARTS}
           onCommit={(finalCommit) => {
-            const prev = activeProject;
-            updateProject((p) => applyBookmarkletImportToProject(p, finalCommit));
-            setPendingBookmarkletImport(null);
-            setBookmarkletToast({
-              id: `toast_${Date.now()}`,
-              vendorName: finalCommit.vendorName,
-              price: finalCommit.price,
-              packageYield: finalCommit.packageYield,
-              prevProject: prev,
-            });
-            if (window.name === 'priceit_capture_window') {
-              setTimeout(() => window.close(), 250);
-            }
+            void commitBookmarkletImport(finalCommit);
           }}
           onCancel={() => {
             setPendingBookmarkletImport(null);
@@ -6482,8 +6705,15 @@ export function App() {
         toast={bookmarkletToast}
         onUndo={() => {
           if (bookmarkletToast) {
-            updateProject(() => bookmarkletToast.prevProject, true);
+            const restored: ProjectPayload = {
+              ...bookmarkletToast.prevProject,
+              version: activeProjectRef.current.version,
+            };
+            updateProject(() => restored, true);
             setBookmarkletToast(null);
+            if (userRef.current && restored.id) {
+              void saveCloudProjectNow(restored);
+            }
           }
         }}
         onDismiss={() => setBookmarkletToast(null)}

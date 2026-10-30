@@ -99,6 +99,215 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     });
   });
 
+  // eBay Buy Browse API OAuth token cache & item lookup endpoint
+  let ebayTokenCache: { token: string; expiresAt: number } | null = null;
+
+  async function getEbayAccessToken(): Promise<string | null> {
+    const clientId = process.env.EBAY_CLIENT_ID?.trim();
+    const clientSecret = process.env.EBAY_CLIENT_SECRET?.trim();
+    if (!clientId || !clientSecret) return null;
+
+    if (ebayTokenCache && Date.now() < ebayTokenCache.expiresAt) {
+      return ebayTokenCache.token;
+    }
+
+    const isSandbox = (process.env.EBAY_ENV || 'production').toLowerCase() === 'sandbox';
+    const tokenUrl = isSandbox
+      ? 'https://api.sandbox.ebay.com/identity/v1/oauth2/token'
+      : 'https://api.ebay.com/identity/v1/oauth2/token';
+    const authHeader = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+    const resp = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials&scope=https%3A%2F%2Fapi.ebay.com%2Foauth%2Fapi_scope',
+    });
+    if (!resp.ok) return null;
+
+    const data = (await resp.json()) as { access_token?: string; expires_in?: number };
+    if (!data.access_token) return null;
+
+    ebayTokenCache = {
+      token: data.access_token,
+      expiresAt: Date.now() + Math.max(60, (data.expires_in || 7200) - 60) * 1000,
+    };
+    return ebayTokenCache.token;
+  }
+
+  app.get('/api/sourcing/ebay-item', async (req, res) => {
+    try {
+      const rawUrl = String(req.query.url || '').trim();
+      const rawItemId = String(req.query.itemId || '').trim();
+      const rawTitle = String(req.query.title || '').trim();
+      const rawHintPn = String(req.query.hintPn || '').trim();
+
+      const token = await getEbayAccessToken();
+      if (!token) {
+        res.status(503).json({ error: 'eBay API credentials not configured' });
+        return;
+      }
+
+      const isSandbox = (process.env.EBAY_ENV || 'production').toLowerCase() === 'sandbox';
+      const baseHost = isSandbox ? 'https://api.sandbox.ebay.com' : 'https://api.ebay.com';
+      const baseUrl = `${baseHost}/buy/browse/v1/item`;
+
+      const isInvalidPn = (v?: string | null) =>
+        !v ||
+        /^(does not apply|n\/a|none|not applicable|see description|unbranded)$/i.test(v.trim()) ||
+        /^B0[A-Z0-9]{8}$/i.test(v.trim());
+
+      const priorityLabels = [
+        /^Manufacturer Part Number$/i,
+        /^OE\/OEM Part Number$/i,
+        /^MPN$/i,
+        /^Part Number$/i,
+        /^Superseded Part Number$/i,
+        /^Interchange Part Number$/i,
+      ];
+
+      type EbayItemResponse = {
+        title?: string;
+        mpn?: string | null;
+        brand?: string | null;
+        price?: { value?: string; currency?: string };
+        shippingOptions?: Array<{ shippingCost?: { value?: string } }>;
+        localizedAspects?: Array<{ name?: string; value?: string }>;
+      };
+
+      const extractMpnFromItem = (item: EbayItemResponse) => {
+        let partNumber = !isInvalidPn(item.mpn) ? item.mpn!.trim() : '';
+        let brand = item.brand?.trim() || '';
+        const aspects = item.localizedAspects || [];
+
+        if (!partNumber) {
+          for (const pattern of priorityLabels) {
+            const found = aspects.find((a) => a.name && pattern.test(a.name.trim()) && !isInvalidPn(a.value));
+            if (found && found.value) {
+              partNumber = found.value.trim();
+              break;
+            }
+          }
+        }
+
+        if (!brand) {
+          const brandAspect = aspects.find((a) => a.name && /^Brand$/i.test(a.name.trim()) && !isInvalidPn(a.value));
+          if (brandAspect?.value) {
+            brand = brandAspect.value.trim();
+          }
+        }
+        return { partNumber, brand };
+      };
+
+      const match = rawUrl.match(/\/itm\/(?:[^/?#]+\/)?(\d{10,14})/) || rawItemId.match(/^(\d{10,14})$/);
+      if (match) {
+        const itemId = match[1];
+        const itemResp = await fetch(`${baseUrl}/v1|${itemId}|0`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+          },
+        });
+        if (!itemResp.ok) {
+          res.status(itemResp.status).json({ error: 'Failed to fetch item from eBay Browse API' });
+          return;
+        }
+
+        const item = (await itemResp.json()) as EbayItemResponse;
+        const { partNumber, brand } = extractMpnFromItem(item);
+        const parsedPrice = item.price?.value ? parseFloat(item.price.value) : null;
+        const rawShip = item.shippingOptions?.[0]?.shippingCost?.value;
+        const parsedShipping = rawShip !== undefined ? parseFloat(rawShip) : null;
+
+        res.json({
+          itemId,
+          title: item.title || '',
+          partNumber,
+          brand,
+          price: parsedPrice !== null && isFinite(parsedPrice) ? parsedPrice : null,
+          shippingCost: parsedShipping !== null && isFinite(parsedShipping) ? parsedShipping : null,
+        });
+        return;
+      }
+
+      // Fallback catalog MPN lookup by title / hintPn (e.g., for Amazon URLs where ASIN is in the URL instead of MPN)
+      const searchQuery = (rawTitle || rawHintPn)
+        .replace(/[^\w\s-]/g, ' ')
+        .replace(/\b(Desktop|Processor|unlocked|retail|box|with|without|cooler)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80);
+
+      if (!searchQuery) {
+        res.status(400).json({ error: 'Valid eBay item URL, item ID, or search title required' });
+        return;
+      }
+
+      const searchResp = await fetch(
+        `${baseHost}/buy/browse/v1/item_summary/search?q=${encodeURIComponent(searchQuery)}&limit=3`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+          },
+        }
+      );
+
+      if (!searchResp.ok) {
+        res.status(searchResp.status).json({ error: 'Failed to search eBay catalog' });
+        return;
+      }
+
+      const searchData = (await searchResp.json()) as {
+        itemSummaries?: Array<{ itemId?: string; title?: string }>;
+      };
+
+      for (const summary of searchData.itemSummaries || []) {
+        if (!summary.itemId) continue;
+        if (
+          rawHintPn &&
+          summary.title &&
+          !summary.title.toUpperCase().includes(rawHintPn.toUpperCase())
+        ) {
+          continue;
+        }
+        const detailResp = await fetch(`${baseUrl}/${encodeURIComponent(summary.itemId)}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+          },
+        });
+        if (!detailResp.ok) continue;
+        const detailItem = (await detailResp.json()) as EbayItemResponse;
+        const { partNumber, brand } = extractMpnFromItem(detailItem);
+        if (partNumber) {
+          res.json({
+            itemId: summary.itemId,
+            title: detailItem.title || rawTitle,
+            partNumber,
+            brand,
+            price: null,
+            shippingCost: null,
+          });
+          return;
+        }
+      }
+
+      res.json({
+        itemId: '',
+        title: rawTitle,
+        partNumber: rawHintPn || '',
+        brand: '',
+        price: null,
+        shippingCost: null,
+      });
+    } catch {
+      res.status(500).json({ error: 'eBay lookup failed' });
+    }
+  });
+
   // Apply CSRF & Origin validation to all /api routes
   app.use('/api', csrfProtectionMiddleware);
 
