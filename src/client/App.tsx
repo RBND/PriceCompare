@@ -424,6 +424,24 @@ export function App() {
 
   function handleCloseTour() {
     setIsTourOpen(false);
+    setActiveTab('bom');
+    if (!isReadOnlyShare) {
+      setConflictServerVersion(null);
+      const blank: ProjectPayload = {
+        id: undefined,
+        client_project_uuid: makeClientId('uuid'),
+        name: 'Untitled Parts Project',
+        category: 'Custom Project',
+        currency: 'USD',
+        default_tax_bps: 700,
+        version: 1,
+        parts: [],
+        offerings: [],
+        bundle_mappings: [],
+        vendor_profiles: [],
+      };
+      updateProject(() => blank, true);
+    }
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(TUTORIAL_COMPLETED_KEY, 'true');
@@ -432,6 +450,16 @@ export function App() {
   }
 
   function handleTourStepChange(nextIndex: number, step: TourStep) {
+    if (tourStepIndex === 0 && nextIndex > 0 && !isReadOnlyShare) {
+      setConflictServerVersion(null);
+      const demoCopy: ProjectPayload = {
+        ...structuredClone(DEMO_BRAKE_PROJECT),
+        id: undefined,
+        client_project_uuid: makeClientId('uuid'),
+        version: 1,
+      };
+      updateProject(() => demoCopy, true);
+    }
     setTourStepIndex(nextIndex);
     if (step.tab && step.tab !== activeTab) {
       setActiveTab(step.tab);

@@ -316,7 +316,7 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     expect(treeText).toContain('No vendors in this project yet.');
     expect(treeText).toContain('No vendor orders selected yet.');
 
-    // 8. Click "Tour / Guide" button, step to Step 5 (Tab 2) and Step 8 (Tab 3), and verify automatic tab switching
+    // 8. Click "Tour / Guide" button on a blank project, click Start (advance from step 0 -> step 1) to load Demo Data, step through tabs, then Close to clear back to a fresh blank project
     const startTourBtn = findNode(tree, (el) => el.props.id === 'start-tour-btn')!;
     (startTourBtn.props.onClick as () => void)();
     tree = renderInteractiveApp();
@@ -325,8 +325,15 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     expect(tourEl.props.isOpen).toBe(true);
     expect(tourEl.props.stepIndex).toBe(0);
 
+    // Click Start (advance from Step 1 [index 0] -> Step 2 [index 1]): loads DEMO_BRAKE_PROJECT
+    (tourEl.props.onStepChange as (idx: number, step: (typeof TOUR_STEPS)[number]) => void)(1, TOUR_STEPS[1]);
+    renderInteractiveApp(); // runs activeProject effect -> updates solverResult
+    tree = renderInteractiveApp();
+    expect(JSON.stringify(tree)).toContain('330mm Vented Front Brake Rotor');
+
     // Advance to Step 5 (index 4 -> Tab 2: Vendor Offerings)
-    (tourEl.props.onStepChange as (idx: number, step: (typeof TOUR_STEPS)[number]) => void)(4, TOUR_STEPS[4]);
+    const tourElStep2 = findNode(tree, (el) => el.type === OnboardingTour)!;
+    (tourElStep2.props.onStepChange as (idx: number, step: (typeof TOUR_STEPS)[number]) => void)(4, TOUR_STEPS[4]);
     tree = renderInteractiveApp();
     expect(findNode(tree, (el) => el.props.id === 'tab-matrix')!.props['aria-selected']).toBe(true);
 
@@ -336,11 +343,14 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     tree = renderInteractiveApp();
     expect(findNode(tree, (el) => el.props.id === 'tab-plan')!.props['aria-selected']).toBe(true);
 
-    // Close the tour
+    // Close / Finish the tour -> clears the demo data to a fresh blank workspace
     const tourEl3 = findNode(tree, (el) => el.type === OnboardingTour)!;
     (tourEl3.props.onClose as () => void)();
+    renderInteractiveApp();
     tree = renderInteractiveApp();
     expect(findNode(tree, (el) => el.type === OnboardingTour)!.props.isOpen).toBe(false);
+    expect(JSON.stringify(tree)).toContain('No required parts in this BOM yet.');
+    expect(JSON.stringify(tree)).not.toContain('330mm Vented Front Brake Rotor');
   });
 
   it('persists cleared and PC demo workspaces in localStorage so page refresh does not revert to brake demo', () => {
@@ -425,7 +435,7 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     };
     (globalThis as unknown as { localStorage: typeof mockStorage }).localStorage = mockStorage;
 
-    // 1. Fresh first-time visitor -> Tour auto-opens on Step 1 (Welcome splash)
+    // 1. Fresh first-time visitor -> Tour auto-opens on Step 1 (Welcome splash with "Start" button and demo data notice)
     const htmlFirstVisit = renderToStaticMarkup(React.createElement(App));
     expect(htmlFirstVisit).toContain('id="start-tour-btn"');
     expect(htmlFirstVisit).toContain('Tour / Guide');
@@ -433,6 +443,20 @@ describe('Tabbed Workspace UI — WAI-ARIA Tabs, Live Badges & Print Datasheet',
     expect(htmlFirstVisit).toContain('popover="manual"');
     expect(htmlFirstVisit).toContain('STEP 1 OF 9');
     expect(htmlFirstVisit).toContain('Welcome to PriceIt Workshop');
+    expect(htmlFirstVisit).toContain('<span>Start</span>');
+    expect(htmlFirstVisit).toContain('automatically clear it when the tour ends');
+
+    // Step 4 (Bookmarklet) clearly explains what the bookmarklet does, its benefits, and that it is optional (not required)
+    const htmlStep4 = renderToStaticMarkup(
+      React.createElement(OnboardingTour, {
+        isOpen: true,
+        stepIndex: 3,
+        onStepChange: () => {},
+        onClose: () => {},
+      })
+    );
+    expect(htmlStep4).toContain('One-Click Web Capture Bookmarklet (Optional)');
+    expect(htmlStep4).toContain('100% Optional — Not Required');
 
     // Verify all 8 target data-tour attributes are present in the workspace markup
     expect(htmlFirstVisit).toContain('data-tour="presets-bar"');

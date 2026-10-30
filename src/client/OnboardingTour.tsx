@@ -35,8 +35,8 @@ export const TOUR_STEPS: TourStep[] = [
     title: 'Welcome to PriceIt Workshop',
     badge: 'QUICK START GUIDE',
     description:
-      'PriceIt is a combinatorial parts & bundle price optimizer. Instead of manually comparing single items against multi-packs, combo kits, and free-shipping thresholds across stores, PriceIt solves the exact cheapest purchase combination for your entire build.',
-    tip: 'Use Next / Back (or your Left & Right arrow keys) to step through the features. The workspace stays live so you can test buttons as we go!',
+      'PriceIt is a combinatorial parts & bundle price optimizer. Instead of manually comparing single items against multi-packs, combo kits, and free-shipping thresholds across stores, PriceIt solves the exact cheapest purchase combination for your entire build. When you click Start, we will load a sample Demo Project so you can see every tab and calculation filled out as we walk through the features.',
+    tip: 'Demo Data Notice: We load sample demo data when you click Start so you can see a complete project in action, and we will automatically clear it when the tour ends so you have a fresh start!',
     targetSelector: null,
     tab: 'bom',
     preferredPlacement: 'center',
@@ -46,7 +46,7 @@ export const TOUR_STEPS: TourStep[] = [
     title: 'Project Presets & Workspace Controls',
     badge: 'PROJECT SWITCHER',
     description:
-      'Load pre-built sample projects ("Demo: Auto Parts" or "Demo: PC Build") to see the bundle solver in action, or click "New Blank" to start your own build from scratch.',
+      'We just loaded the "Demo: Auto Parts" sample project for this tour. Anytime in the future, you can click "Demo: Auto Parts" or "Demo: PC Build" to explore sample builds, or click "New Blank" to reset to an empty workspace.',
     tip: 'Below the top bar, you can also rename your project, set its category, and configure your default local sales tax rate.',
     targetSelector: '[data-tour="presets-bar"]',
     tab: 'bom',
@@ -65,11 +65,11 @@ export const TOUR_STEPS: TourStep[] = [
   },
   {
     id: 'bookmarklet-btn',
-    title: 'One-Click Web Capture & Part Pinning',
-    badge: 'BROWSER BOOKMARKLET',
+    title: 'One-Click Web Capture Bookmarklet (Optional)',
+    badge: 'OPTIONAL • BROWSER BOOKMARKLET',
     description:
-      'Drag "+ PriceIt Capture" to your browser bookmarks bar (or click it for setup instructions). While browsing eBay, Amazon, RockAuto, or any store, click the bookmarklet to auto-extract part numbers, prices, pack yields, and shipping right into your project.',
-    tip: 'Pro tip: Click the Bookmark Pin icon on any BOM row to auto-attach all scraped vendor listings directly to that part!',
+      'What it does & benefits: "+ PriceIt Capture" is a browser bookmarklet you can drag to your bookmarks bar. While shopping on eBay, Amazon, RockAuto, or any store, clicking it automatically extracts the product title, MPN/part number, price, shipping cost, and pack quantity—sending it straight into your open PriceIt tab without copy-pasting between tabs.',
+    tip: '100% Optional — Not Required: You never have to install or use the bookmarklet! You can always type or paste parts and prices manually in Tab 1 and Tab 2. If you do use it, click the Bookmark Pin icon on any BOM row to auto-attach captured listings directly to that part.',
     targetSelector: '[data-tour="bookmarklet-btn"]',
     tab: 'bom',
     preferredPlacement: 'bottom',
@@ -79,7 +79,7 @@ export const TOUR_STEPS: TourStep[] = [
     title: 'Step 2: Add Vendor Listings & Bundle Kits',
     badge: 'TAB 2 • VENDOR OFFERINGS',
     description:
-      'Here in Tab 2, add individual vendor listings or multi-part combo kits. Paste a product URL to auto-detect the retailer name, enter the price/shipping/discount, and check which BOM parts the listing includes.',
+      'Here in Tab 2, add individual vendor listings or multi-part combo kits manually (or review items captured via the bookmarklet). Paste a product URL to auto-detect the retailer name, enter the price/shipping/discount, and check which BOM parts the listing includes.',
     tip: 'If a single listing is a combo kit (like "2× Rotors + 1× Brake Pad Set"), check both parts and set their yield quantities!',
     targetSelector: '[data-tour="offering-add-form"]',
     tab: 'matrix',
@@ -125,7 +125,7 @@ export const TOUR_STEPS: TourStep[] = [
     badge: 'EXPORT & CLOUD SYNC',
     description:
       'Click "Share / Export" to generate a read-only share link, print a workshop PDF datasheet with a scannable QR code, copy Markdown/Reddit tables, or download a CSV spreadsheet.',
-    tip: 'You can also click "Sign In / Sync" in the top right to save your projects to the cloud and access them across devices.',
+    tip: 'Click "Finish Tour" below (or Close) and we will clear this sample demo data so you have a fresh, blank workspace ready for your own project!',
     targetSelector: '[data-tour="share-export-btn"]',
     tab: 'plan',
     preferredPlacement: 'bottom',
@@ -569,7 +569,7 @@ export function OnboardingTour({ isOpen, stepIndex, onStepChange, onClose }: Onb
                   color: 'var(--accent-amber)',
                 }}
               >
-                <span>Next</span>
+                <span>{isFirstStep ? 'Start' : 'Next'}</span>
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             ) : (
