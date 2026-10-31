@@ -1378,6 +1378,40 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     res.json({ ok: true, revoked_other_sessions: true });
   });
 
+  // POST /api/auth/password/set (Allows OAuth-only or passwordless accounts to create a password)
+  app.post('/api/auth/password/set', async (req, res) => {
+    const user = getAuthenticatedUser(db, req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const newPassword = typeof req.body?.new_password === 'string' ? req.body.new_password : '';
+    if (newPassword.length < 8 || newPassword.length > 128) {
+      res.status(400).json({ error: 'Password must be between 8 and 128 characters.' });
+      return;
+    }
+
+    const userRow = db
+      .prepare(`SELECT password_hash FROM users WHERE id = ?`)
+      .get(user.id) as { password_hash: string | null } | undefined;
+
+    if (userRow?.password_hash !== null) {
+      res.status(400).json({ error: 'Account already has a password. Use password change instead.' });
+      return;
+    }
+
+    const newHash = await hashPassword(newPassword);
+    const now = Date.now();
+    db.prepare(`UPDATE users SET password_hash = ?, is_passwordless = 0, updated_at = ? WHERE id = ?`).run(
+      newHash,
+      now,
+      user.id
+    );
+
+    res.json({ ok: true, has_password: true, is_passwordless: false });
+  });
+
   // POST /api/auth/password/remove (Switch to 100% Passwordless Account)
   app.post('/api/auth/password/remove', async (req, res) => {
     const user = getAuthenticatedUser(db, req);

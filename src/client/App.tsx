@@ -1887,6 +1887,35 @@ export function App() {
     }
   }
 
+  async function handleSetPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setAccountMessage(null);
+    if (changePassNew !== changePassConfirm) {
+      setAccountMessage({ type: 'error', text: 'New passwords do not match.' });
+      return;
+    }
+    try {
+      await apiFetch<{ ok: boolean }>('/api/auth/password/set', {
+        method: 'POST',
+        body: JSON.stringify({
+          new_password: changePassNew,
+        }),
+      });
+      setChangePassNew('');
+      setChangePassConfirm('');
+      setAccountMessage({
+        type: 'success',
+        text: 'Account password set! You can now sign in with email & password.',
+      });
+      await fetchAccountSecurity();
+    } catch (err: unknown) {
+      setAccountMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to set password',
+      });
+    }
+  }
+
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault();
     setAccountMessage(null);
@@ -6305,20 +6334,67 @@ export function App() {
           {settingsTab === 'security' && (
             <div className="flex flex-col gap-4">
               {accountSecurity?.is_passwordless ? (
-                <div
-                  className="p-4 border flex items-start gap-3"
-                  style={{
-                    backgroundColor: 'var(--accent-emerald-bg)',
-                    borderColor: 'var(--accent-emerald)',
-                    color: 'var(--accent-emerald)',
-                  }}
-                >
-                  <Shield className="w-5 h-5 shrink-0 mt-0.5" />
-                  <div className="text-xs">
-                    <strong className="block text-sm font-semibold mb-1">✓ 100% Passwordless Account</strong>
-                    Your account is permanently passwordless! It is secured exclusively by hardware/biometric Passkeys and connected OAuth providers. There is no password stored on the server that can be leaked, phished, or brute-forced.
+                <>
+                  <div
+                    className="p-4 border flex items-start gap-3"
+                    style={{
+                      backgroundColor: 'var(--accent-emerald-bg)',
+                      borderColor: 'var(--accent-emerald)',
+                      color: 'var(--accent-emerald)',
+                    }}
+                  >
+                    <Shield className="w-5 h-5 shrink-0 mt-0.5" />
+                    <div className="text-xs">
+                      <strong className="block text-sm font-semibold mb-1">✓ Passwordless Account Active</strong>
+                      Your account currently has no password set and is secured by your Passkeys ({accountSecurity.passkeys.length}) and/or connected OAuth providers ({accountSecurity.oauth_accounts.length}). If you wish to add a traditional password, you can set one below.
+                    </div>
                   </div>
-                </div>
+
+                  <form onSubmit={handleSetPassword} className="flex flex-col gap-3 p-3 border" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                    <h3 className="font-semibold text-xs uppercase tracking-wider text-[var(--text-secondary)]">
+                      Set Account Password (Optional)
+                    </h3>
+                    <div>
+                      <label className="block text-xs font-mono-tabular uppercase mb-1">New Password (min 8 chars)</label>
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        value={changePassNew}
+                        onChange={(e) => setChangePassNew(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-mono-tabular uppercase mb-1">Confirm New Password</label>
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        value={changePassConfirm}
+                        onChange={(e) => setChangePassConfirm(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                        style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+                      />
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="submit"
+                        className="px-4 py-1.5 text-xs font-semibold border cursor-pointer"
+                        style={{
+                          backgroundColor: 'var(--accent-amber-bg)',
+                          borderColor: 'var(--accent-amber)',
+                          color: 'var(--accent-amber)',
+                        }}
+                      >
+                        Set Password
+                      </button>
+                    </div>
+                  </form>
+                </>
               ) : (
                 <form onSubmit={handleChangePassword} className="flex flex-col gap-3">
                   <h3 className="font-semibold text-xs uppercase tracking-wider text-[var(--text-secondary)]">
@@ -6394,11 +6470,24 @@ export function App() {
                 <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                   Link external identity providers to sign in with one click without needing a password.
                 </p>
+                {accountSecurity && (
+                  <div className="mt-2 p-2 border text-[11px] font-mono-tabular flex flex-wrap items-center gap-3" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Active Sign-In Methods:</span>
+                    <span>Password: <strong>{accountSecurity.has_password ? 'Yes' : 'None'}</strong></span>
+                    <span>Passkeys: <strong>{accountSecurity.passkeys.length}</strong></span>
+                    <span>OAuth: <strong>{accountSecurity.oauth_accounts.length}</strong></span>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 gap-2">
                 {(['google', 'facebook'] as const).map((prov) => {
                   const linked = accountSecurity?.oauth_accounts.find((a) => a.provider === prov);
+                  const totalMethods =
+                    (accountSecurity?.has_password ? 1 : 0) +
+                    (accountSecurity?.passkeys.length || 0) +
+                    (accountSecurity?.oauth_accounts.length || 0);
+                  const isLastMethod = Boolean(linked && totalMethods <= 1);
                   return (
                     <div
                       key={prov}
@@ -6424,14 +6513,20 @@ export function App() {
                       {linked ? (
                         <button
                           type="button"
+                          disabled={isLastMethod}
+                          title={
+                            isLastMethod
+                              ? 'Cannot disconnect your only remaining sign-in method. Set a password or add a Passkey first.'
+                              : 'Disconnect OAuth account'
+                          }
                           onClick={() => handleUnlinkOAuth(prov)}
-                          className="px-2.5 py-1 text-xs border cursor-pointer hover:bg-[var(--accent-danger-bg)]"
+                          className="px-2.5 py-1 text-xs border cursor-pointer hover:bg-[var(--accent-danger-bg)] disabled:opacity-40 disabled:cursor-not-allowed"
                           style={{
                             borderColor: 'var(--border-subtle)',
-                            color: 'var(--accent-danger)',
+                            color: isLastMethod ? 'var(--text-muted)' : 'var(--accent-danger)',
                           }}
                         >
-                          Disconnect
+                          {isLastMethod ? 'Only Sign-In Method' : 'Disconnect'}
                         </button>
                       ) : (
                         <button
