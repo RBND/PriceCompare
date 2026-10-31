@@ -275,7 +275,7 @@ export function App() {
   const [adminTab, setAdminTab] = useState<'users' | 'oauth' | 'system'>('users');
   const [adminUsers, setAdminUsers] = useState<AdminUserPublic[]>([]);
   const [adminOAuthConfigs, setAdminOAuthConfigs] = useState<
-    Array<{ provider: string; client_id: string; is_secret_set: boolean; enabled: boolean }>
+    Array<{ provider: string; client_id: string; is_secret_set: boolean; enabled: boolean; redirect_uri?: string }>
   >([]);
   const [oauthInputs, setOauthInputs] = useState<Record<string, { client_id: string; client_secret: string; enabled: boolean }>>({});
   const [adminSearch, setAdminSearch] = useState('');
@@ -569,11 +569,34 @@ export function App() {
     activeProject.default_tax_bps,
   ]);
 
-  // Check URL for ?share=<token> or check logged-in session on startup
+  // Check URL for ?share=<token>, OAuth redirect params, or logged-in session on startup
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const pathMatch = window.location.pathname.match(/^\/share\/([A-Za-z0-9_-]+)/);
     const shareToken = pathMatch ? pathMatch[1] : params.get('share');
+    const oauthLogin = params.get('oauth_login');
+    const oauthLinked = params.get('oauth_linked');
+    const oauthErrorParam = params.get('oauth_error');
+
+    if (oauthLogin || oauthLinked || oauthErrorParam) {
+      const nextParams = new URLSearchParams(window.location.search);
+      nextParams.delete('oauth_login');
+      nextParams.delete('oauth_linked');
+      nextParams.delete('oauth_error');
+      const cleanQuery = nextParams.toString();
+      if (window.history && typeof window.history.replaceState === 'function') {
+        window.history.replaceState(
+          {},
+          '',
+          `${window.location.pathname}${cleanQuery ? `?${cleanQuery}` : ''}${window.location.hash}`
+        );
+      }
+    }
+
+    if (oauthErrorParam) {
+      setAuthError(oauthErrorParam);
+      setStatusBanner({ type: 'error', text: oauthErrorParam });
+    }
 
     if (shareToken) {
       setIsTourOpen(false);
@@ -604,7 +627,37 @@ export function App() {
         if (data.user) {
           setUser(data.user);
           setIsTourOpen(false);
-          await refreshCloudProjectsAndSelect(shareToken ? false : true);
+          let migratedProjectId: string | null = null;
+          if (oauthLogin && guestStateRef.current.is_dirty && guestStateRef.current.project.parts.length > 0) {
+            try {
+              const migPayload = buildGuestMigrationPayload();
+              if (migPayload) {
+                const migRes = await apiFetch<{ migrated_project_id: string | null }>('/api/projects/migrate-guest', {
+                  method: 'POST',
+                  body: JSON.stringify(migPayload),
+                });
+                migratedProjectId = migRes.migrated_project_id;
+                try {
+                  localStorage.removeItem(GUEST_STORAGE_KEY);
+                } catch {}
+                setGuestState((prev) => ({ ...prev, is_dirty: false }));
+              }
+            } catch {}
+          }
+          await refreshCloudProjectsAndSelect(shareToken ? false : true, migratedProjectId);
+          if (oauthLogin) {
+            setStatusBanner({
+              type: 'success',
+              text: migratedProjectId
+                ? `Signed in via ${oauthLogin.toUpperCase()} as ${data.user.display_name} & migrated your guest project!`
+                : `Signed in via ${oauthLogin.toUpperCase()} as ${data.user.display_name}.`,
+            });
+          } else if (oauthLinked) {
+            setStatusBanner({
+              type: 'success',
+              text: `Connected ${oauthLinked.toUpperCase()} account successfully.`,
+            });
+          }
         }
       })
       .catch(() => {})
@@ -1636,41 +1689,11 @@ export function App() {
     }
   }
 
-  async function handleOAuthSignIn(provider: 'google' | 'microsoft' | 'facebook' | 'github' | 'reddit' | 'meta') {
+  function handleOAuthSignIn(provider: 'google' | 'facebook') {
     setAuthError('');
-    try {
-      const emailToUse = authEmail.trim() || `user.${provider}@priceit.rbnd.cc`;
-      const guestMigration = buildGuestMigrationPayload();
-      const res = await apiFetch<{ user: UserPublic; migrated_project_id: string | null }>(
-        '/api/auth/oauth/callback',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            provider,
-            provider_account_id: `oauth-${provider}-${emailToUse}`,
-            email: emailToUse,
-            display_name: authDisplayName.trim() || `${provider.toUpperCase()} Craftsperson`,
-            guest_migration: guestMigration,
-          }),
-        }
-      );
-
-      setUser(res.user);
-      if (guestMigration) {
-        try {
-          localStorage.removeItem(GUEST_STORAGE_KEY);
-        } catch {}
-        setGuestState((prev) => ({ ...prev, is_dirty: false }));
-      }
-
-      authDialogRef.current?.close();
-      await refreshCloudProjectsAndSelect(true, res.migrated_project_id);
-      setStatusBanner({
-        type: 'success',
-        text: `Signed in via ${provider.toUpperCase()} as ${res.user.display_name}.`,
-      });
-    } catch (err: unknown) {
-      setAuthError(err instanceof Error ? err.message : 'OAuth login failed');
+    const returnTo = typeof window !== 'undefined' && window.location.pathname.startsWith('/admin') ? '/admin' : '/';
+    if (typeof window !== 'undefined') {
+      window.location.href = `/api/auth/oauth/${provider}/start?mode=login&return_to=${encodeURIComponent(returnTo)}`;
     }
   }
 
@@ -1916,28 +1939,11 @@ export function App() {
     }
   }
 
-  async function handleLinkOAuth(provider: 'google' | 'microsoft' | 'facebook' | 'github' | 'reddit') {
+  function handleLinkOAuth(provider: 'google' | 'facebook') {
     setAccountMessage(null);
-    try {
-      const email = user?.email || `user.${provider}@priceit.rbnd.cc`;
-      await apiFetch('/api/auth/oauth/link', {
-        method: 'POST',
-        body: JSON.stringify({
-          provider,
-          email,
-          provider_account_id: `oauth-${provider}-${user?.id || Date.now()}`,
-        }),
-      });
-      setAccountMessage({
-        type: 'success',
-        text: `Connected ${provider.toUpperCase()} account successfully.`,
-      });
-      await fetchAccountSecurity();
-    } catch (err: unknown) {
-      setAccountMessage({
-        type: 'error',
-        text: err instanceof Error ? err.message : `Failed to link ${provider}`,
-      });
+    const returnTo = typeof window !== 'undefined' && window.location.pathname.startsWith('/admin') ? '/admin' : '/';
+    if (typeof window !== 'undefined') {
+      window.location.href = `/api/auth/oauth/${provider}/start?mode=link&return_to=${encodeURIComponent(returnTo)}`;
     }
   }
 
@@ -2799,8 +2805,8 @@ export function App() {
                 <div className="text-[11px] font-mono-tabular uppercase mb-2 text-center" style={{ color: 'var(--text-secondary)' }}>
                   Or Federated OAuth
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => (
+                <div className="grid grid-cols-2 gap-2">
+                  {(['google', 'facebook'] as const).map((prov) => (
                     <button
                       key={prov}
                       type="button"
@@ -3153,9 +3159,12 @@ export function App() {
               </div>
 
               <div className="grid grid-cols-1 gap-3">
-                {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => {
+                {(['google', 'facebook'] as const).map((prov) => {
                   const currentInput = oauthInputs[prov] || { client_id: '', client_secret: '', enabled: true };
                   const liveConfig = adminOAuthConfigs.find((c) => c.provider === prov);
+                  const callbackUri =
+                    liveConfig?.redirect_uri ||
+                    `${typeof window !== 'undefined' ? window.location.origin : 'https://priceit.rbnd.cc'}/api/auth/oauth/${prov}/callback`;
                   return (
                     <div
                       key={prov}
@@ -3166,14 +3175,13 @@ export function App() {
                         <div className="flex items-center gap-2">
                           <Key className="w-4 h-4 text-[var(--accent-amber)]" />
                           <span className="font-bold text-xs uppercase tracking-wider">{prov}</span>
-                          {liveConfig?.client_id && (
+                          {liveConfig?.client_id && liveConfig?.is_secret_set ? (
                             <span className="text-[10px] px-1.5 py-0.2 border bg-[var(--accent-emerald-bg)] text-[var(--accent-emerald)] font-mono-tabular">
-                              CONFIGURED
+                              CONFIGURED (LIVE OAUTH)
                             </span>
-                          )}
-                          {!liveConfig?.client_id && (
+                          ) : (
                             <span className="text-[10px] px-1.5 py-0.2 border bg-[var(--bg-elevated)] text-[var(--text-muted)] font-mono-tabular">
-                              SIMULATION / MOCK
+                              NOT CONFIGURED
                             </span>
                           )}
                         </div>
@@ -3191,6 +3199,24 @@ export function App() {
                           />
                           <span>Enabled</span>
                         </label>
+                      </div>
+
+                      <div className="p-2 border text-[11px] font-mono-tabular flex items-center justify-between gap-2" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}>
+                        <div className="truncate">
+                          <span style={{ color: 'var(--text-secondary)' }}>Authorized Redirect URI: </span>
+                          <span className="font-semibold text-[var(--text-primary)]">{callbackUri}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard?.writeText(callbackUri).catch(() => {});
+                            setAdminMessage({ type: 'success', text: `Copied ${prov.toUpperCase()} Redirect URI to clipboard.` });
+                          }}
+                          className="px-2 py-0.5 border text-[10px] cursor-pointer shrink-0 hover:bg-[var(--bg-hover)]"
+                          style={{ borderColor: 'var(--border-subtle)' }}
+                        >
+                          Copy URI
+                        </button>
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -5659,8 +5685,8 @@ export function App() {
             <div className="text-[11px] font-mono-tabular uppercase mb-2" style={{ color: 'var(--text-secondary)' }}>
               Or Continue with Federated OAuth Provider
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => (
+            <div className="grid grid-cols-2 gap-2">
+              {(['google', 'facebook'] as const).map((prov) => (
                 <button
                   key={prov}
                   type="button"
@@ -6371,7 +6397,7 @@ export function App() {
               </div>
 
               <div className="grid grid-cols-1 gap-2">
-                {(['google', 'microsoft', 'facebook', 'github', 'reddit'] as const).map((prov) => {
+                {(['google', 'facebook'] as const).map((prov) => {
                   const linked = accountSecurity?.oauth_accounts.find((a) => a.provider === prov);
                   return (
                     <div

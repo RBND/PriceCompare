@@ -609,9 +609,21 @@ describe('Security Controls, Auth, OAuth Linking Safety, Idempotent Guest Migrat
         .set('X-PriceIt-CSRF', '1')
         .set('Cookie', adminCookie);
       expect(getOAuthRes.status).toBe(200);
+      expect(getOAuthRes.body.configs.map((c: any) => c.provider)).toEqual(['google', 'facebook']);
       const googleConfig = getOAuthRes.body.configs.find((c: any) => c.provider === 'google');
       expect(googleConfig.client_id).toBe('google-client-id-12345.apps.googleusercontent.com');
       expect(googleConfig.is_secret_set).toBe(true);
+
+      // 7. Starting Google OAuth redirects to real Google authorization endpoint with configured client_id
+      const startGoogleRes = await request(app).get('/api/auth/oauth/google/start?mode=login');
+      expect(startGoogleRes.status).toBe(302);
+      expect(startGoogleRes.headers.location).toContain('https://accounts.google.com/o/oauth2/v2/auth');
+      expect(startGoogleRes.headers.location).toContain(
+        encodeURIComponent('google-client-id-12345.apps.googleusercontent.com')
+      );
+      expect(startGoogleRes.headers.location).toContain(
+        encodeURIComponent('/api/auth/oauth/google/callback')
+      );
     });
   });
 });

@@ -332,9 +332,438 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const user = getAuthenticatedUser(db, req);
     res.json({
       user,
-      oauth_providers: ['google', 'microsoft', 'facebook', 'github', 'reddit'],
+      oauth_providers: ['google', 'facebook'],
     });
   });
+
+  function getPublicOrigin(req: express.Request): string {
+    const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || 'localhost:28085') as string;
+    const host = String(hostHeader).split(',')[0].trim();
+    const hostname = host.split(':')[0].toLowerCase();
+    const protoHeader = (req.headers['x-forwarded-proto'] || req.protocol || 'http') as string;
+    const rawProto = String(protoHeader).split(',')[0].trim().toLowerCase();
+    const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+    const proto = !isLocal ? 'https' : rawProto;
+    return `${proto}://${host}`;
+  }
+
+  function getOAuthProviderConfig(prov: 'google' | 'facebook'): {
+    clientId: string;
+    clientSecret: string;
+    enabled: boolean;
+  } {
+    const rows = db
+      .prepare(`SELECT key, value FROM system_settings WHERE key IN (?, ?, ?)`)
+      .all(`oauth_${prov}_client_id`, `oauth_${prov}_client_secret`, `oauth_${prov}_enabled`) as Array<{
+      key: string;
+      value: string;
+    }>;
+    const map = new Map(rows.map((r) => [r.key, r.value]));
+    const clientId = (map.get(`oauth_${prov}_client_id`) || process.env[`${prov.toUpperCase()}_CLIENT_ID`] || '').trim();
+    const clientSecret = (
+      map.get(`oauth_${prov}_client_secret`) ||
+      process.env[`${prov.toUpperCase()}_CLIENT_SECRET`] ||
+      ''
+    ).trim();
+    const enabled = map.get(`oauth_${prov}_enabled`) !== 'false';
+    return { clientId, clientSecret, enabled };
+  }
+
+  const OAUTH_STATE_COOKIE = 'priceit_oauth_state';
+
+  // GET /api/auth/oauth/:provider/start (Initiates real OAuth 2.0 Authorization Code flow for Google & Facebook)
+  app.get('/api/auth/oauth/:provider/start', (req, res) => {
+    const provider = String(req.params.provider || '').toLowerCase();
+    if (provider !== 'google' && provider !== 'facebook') {
+      res.redirect(`/?oauth_error=${encodeURIComponent(`Unsupported OAuth provider: ${provider}`)}`);
+      return;
+    }
+
+    const mode = req.query.mode === 'link' ? 'link' : 'login';
+    const rawReturnTo = String(req.query.return_to || '/');
+    const returnTo = rawReturnTo === '/admin' ? '/admin' : '/';
+
+    const currentUser = getAuthenticatedUser(db, req);
+    if (mode === 'link' && !currentUser) {
+      res.redirect(`${returnTo}?oauth_error=${encodeURIComponent('Please sign in first before linking an OAuth account.')}`);
+      return;
+    }
+
+    const config = getOAuthProviderConfig(provider);
+    if (!config.enabled) {
+      res.redirect(
+        `${returnTo}?oauth_error=${encodeURIComponent(`${provider.toUpperCase()} sign-in is currently disabled by the administrator.`)}`
+      );
+      return;
+    }
+
+    if (!config.clientId || !config.clientSecret) {
+      res.redirect(
+        `${returnTo}?oauth_error=${encodeURIComponent(`${provider.toUpperCase()} OAuth Client ID and Secret are not configured. Configure them in /admin.`)}`
+      );
+      return;
+    }
+
+    const stateNonce = crypto.randomBytes(24).toString('base64url');
+    const statePayload = JSON.stringify({
+      nonce: stateNonce,
+      provider,
+      mode,
+      returnTo,
+      userId: mode === 'link' && currentUser ? currentUser.id : null,
+    });
+
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie(OAUTH_STATE_COOKIE, statePayload, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 10 * 60 * 1000,
+    });
+
+    const redirectUri = `${getPublicOrigin(req)}/api/auth/oauth/${provider}/callback`;
+
+    if (provider === 'google') {
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', config.clientId);
+      authUrl.searchParams.set('redirect_uri', redirectUri);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', 'openid email profile');
+      authUrl.searchParams.set('state', stateNonce);
+      authUrl.searchParams.set('prompt', 'select_account');
+      res.redirect(authUrl.toString());
+      return;
+    }
+
+    const authUrl = new URL('https://www.facebook.com/v19.0/dialog/oauth');
+    authUrl.searchParams.set('client_id', config.clientId);
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('scope', 'email,public_profile');
+    authUrl.searchParams.set('state', stateNonce);
+    res.redirect(authUrl.toString());
+  });
+
+  // Shared handler for real OAuth 2.0 GET callback from Google or Facebook
+  async function handleOAuthGetCallback(req: express.Request, res: express.Response) {
+    const provider = String(req.params.provider || '').toLowerCase();
+    const isProd = process.env.NODE_ENV === 'production';
+
+    let savedState: {
+      nonce?: string;
+      provider?: string;
+      mode?: 'login' | 'link';
+      returnTo?: string;
+      userId?: string | null;
+    } | null = null;
+
+    try {
+      const rawCookie = req.cookies?.[OAUTH_STATE_COOKIE];
+      if (rawCookie && typeof rawCookie === 'string') {
+        savedState = JSON.parse(rawCookie);
+      }
+    } catch {}
+
+    res.clearCookie(OAUTH_STATE_COOKIE, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      path: '/',
+    });
+
+    const returnTo = savedState?.returnTo === '/admin' ? '/admin' : '/';
+
+    if (provider !== 'google' && provider !== 'facebook') {
+      res.redirect(`${returnTo}?oauth_error=${encodeURIComponent(`Unsupported OAuth provider: ${provider}`)}`);
+      return;
+    }
+
+    const providerError = String(req.query.error_description || req.query.error || '').trim();
+    if (providerError) {
+      res.redirect(`${returnTo}?oauth_error=${encodeURIComponent(`${provider.toUpperCase()} login cancelled or failed: ${providerError}`)}`);
+      return;
+    }
+
+    const code = String(req.query.code || '').trim();
+    const state = String(req.query.state || '').trim();
+
+    if (!code || !state || !savedState || savedState.nonce !== state || savedState.provider !== provider) {
+      res.redirect(
+        `${returnTo}?oauth_error=${encodeURIComponent('OAuth security state verification failed or expired. Please try signing in again.')}`
+      );
+      return;
+    }
+
+    const config = getOAuthProviderConfig(provider);
+    if (!config.clientId || !config.clientSecret || !config.enabled) {
+      res.redirect(
+        `${returnTo}?oauth_error=${encodeURIComponent(`${provider.toUpperCase()} OAuth credentials are not configured or enabled.`)}`
+      );
+      return;
+    }
+
+    const redirectUri = `${getPublicOrigin(req)}/api/auth/oauth/${provider}/callback`;
+
+    try {
+      let providerAccountId = '';
+      let email = '';
+      let displayName = '';
+
+      if (provider === 'google') {
+        const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code,
+            client_id: config.clientId,
+            client_secret: config.clientSecret,
+            redirect_uri: redirectUri,
+            grant_type: 'authorization_code',
+          }).toString(),
+        });
+
+        const tokenData = (await tokenResp.json().catch(() => ({}))) as {
+          access_token?: string;
+          error?: string;
+          error_description?: string;
+        };
+
+        if (!tokenResp.ok || !tokenData.access_token) {
+          const msg = tokenData.error_description || tokenData.error || 'Failed to exchange Google authorization code';
+          res.redirect(`${returnTo}?oauth_error=${encodeURIComponent(`Google OAuth error: ${msg}`)}`);
+          return;
+        }
+
+        const profileResp = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` },
+        });
+        const profile = (await profileResp.json().catch(() => ({}))) as {
+          sub?: string;
+          id?: string;
+          email?: string;
+          name?: string;
+          given_name?: string;
+        };
+
+        if (!profileResp.ok || (!profile.sub && !profile.id)) {
+          res.redirect(`${returnTo}?oauth_error=${encodeURIComponent('Failed to retrieve Google user profile.')}`);
+          return;
+        }
+
+        providerAccountId = String(profile.sub || profile.id);
+        email = String(profile.email || '').trim().toLowerCase() || `google_${providerAccountId}@google.oauth.priceit`;
+        displayName = String(profile.name || profile.given_name || email.split('@')[0] || 'Google User').trim();
+      } else {
+        const tokenUrl = new URL('https://graph.facebook.com/v19.0/oauth/access_token');
+        tokenUrl.searchParams.set('client_id', config.clientId);
+        tokenUrl.searchParams.set('redirect_uri', redirectUri);
+        tokenUrl.searchParams.set('client_secret', config.clientSecret);
+        tokenUrl.searchParams.set('code', code);
+
+        const tokenResp = await fetch(tokenUrl.toString());
+        const tokenData = (await tokenResp.json().catch(() => ({}))) as {
+          access_token?: string;
+          error?: { message?: string };
+        };
+
+        if (!tokenResp.ok || !tokenData.access_token) {
+          const msg = tokenData.error?.message || 'Failed to exchange Facebook authorization code';
+          res.redirect(`${returnTo}?oauth_error=${encodeURIComponent(`Facebook OAuth error: ${msg}`)}`);
+          return;
+        }
+
+        const profileUrl = new URL('https://graph.facebook.com/me');
+        profileUrl.searchParams.set('fields', 'id,name,email');
+        profileUrl.searchParams.set('access_token', tokenData.access_token);
+
+        const profileResp = await fetch(profileUrl.toString());
+        const profile = (await profileResp.json().catch(() => ({}))) as {
+          id?: string;
+          name?: string;
+          email?: string;
+        };
+
+        if (!profileResp.ok || !profile.id) {
+          res.redirect(`${returnTo}?oauth_error=${encodeURIComponent('Failed to retrieve Facebook user profile.')}`);
+          return;
+        }
+
+        providerAccountId = String(profile.id);
+        email = String(profile.email || '').trim().toLowerCase() || `fb_${providerAccountId}@facebook.oauth.priceit`;
+        displayName = String(profile.name || email.split('@')[0] || 'Facebook User').trim();
+      }
+
+      const now = Date.now();
+
+      // Mode 1: Account Linking for an already signed-in user
+      if (savedState.mode === 'link') {
+        const currentUser = getAuthenticatedUser(db, req);
+        const targetUserId = currentUser?.id || savedState.userId;
+        if (!targetUserId) {
+          res.redirect(`${returnTo}?oauth_error=${encodeURIComponent('Session expired while linking OAuth account.')}`);
+          return;
+        }
+
+        const currentSessionHash = getCurrentSessionHash(req);
+        let conflict = false;
+
+        db.transaction(() => {
+          const existing = db
+            .prepare(`SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_account_id = ?`)
+            .get(provider, providerAccountId) as { user_id: string } | undefined;
+
+          if (existing && existing.user_id !== targetUserId) {
+            conflict = true;
+            return;
+          }
+
+          const alreadyLinked = db
+            .prepare(`SELECT id FROM oauth_accounts WHERE user_id = ? AND provider = ?`)
+            .get(targetUserId, provider) as { id: string } | undefined;
+
+          if (alreadyLinked) {
+            db.prepare(`UPDATE oauth_accounts SET provider_account_id = ? WHERE id = ?`).run(
+              providerAccountId,
+              alreadyLinked.id
+            );
+          } else {
+            db.prepare(
+              `INSERT INTO oauth_accounts (id, user_id, provider, provider_account_id, created_at)
+               VALUES (?, ?, ?, ?, ?)`
+            ).run(crypto.randomUUID(), targetUserId, provider, providerAccountId, now);
+          }
+
+          if (currentSessionHash) {
+            db.prepare(`UPDATE sessions SET reauthenticated_at = ? WHERE id = ?`).run(now, currentSessionHash);
+          }
+        })();
+
+        if (conflict) {
+          res.redirect(
+            `${returnTo}?oauth_error=${encodeURIComponent(`This ${provider.toUpperCase()} account is already linked to a different PriceIt user.`)}`
+          );
+          return;
+        }
+
+        res.redirect(`${returnTo}?oauth_linked=${encodeURIComponent(provider)}`);
+        return;
+      }
+
+      // Mode 2: Sign-in or Registration via OAuth
+      const adminEmails = [
+        'myke.endrodi@gmail.com',
+        'mykehype@gmail.com',
+        'admin@priceit.rbnd.cc',
+        process.env.ADMIN_EMAIL?.toLowerCase(),
+      ].filter(Boolean);
+      const shouldBeAdmin = adminEmails.includes(email) ? 1 : 0;
+
+      let userId = '';
+      let isBanned = false;
+      let banReason: string | null = null;
+
+      db.transaction(() => {
+        const existingOAuth = db
+          .prepare(`SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_account_id = ?`)
+          .get(provider, providerAccountId) as { user_id: string } | undefined;
+
+        if (existingOAuth) {
+          userId = existingOAuth.user_id;
+          const u = db
+            .prepare(`SELECT id, is_banned, ban_reason, is_admin FROM users WHERE id = ?`)
+            .get(userId) as { id: string; is_banned?: number; ban_reason?: string | null; is_admin?: number } | undefined;
+          if (!u) {
+            // Orphaned oauth_accounts row; recreate user
+            userId = crypto.randomUUID();
+            db.prepare(
+              `INSERT INTO users (id, email, password_hash, email_verified, display_name, is_admin, created_at, updated_at)
+               VALUES (?, ?, NULL, 1, ?, ?, ?, ?)`
+            ).run(userId, email, displayName, shouldBeAdmin, now, now);
+            db.prepare(`UPDATE oauth_accounts SET user_id = ? WHERE provider = ? AND provider_account_id = ?`).run(
+              userId,
+              provider,
+              providerAccountId
+            );
+            return;
+          }
+          if (u.is_banned === 1) {
+            isBanned = true;
+            banReason = u.ban_reason || null;
+            return;
+          }
+          if (shouldBeAdmin && !u.is_admin) {
+            db.prepare(`UPDATE users SET is_admin = 1, updated_at = ? WHERE id = ?`).run(now, userId);
+          }
+        } else {
+          const existingUser = db
+            .prepare(`SELECT id, email, email_verified, display_name, is_banned, ban_reason, is_admin FROM users WHERE email = ?`)
+            .get(email) as
+            | {
+                id: string;
+                email: string;
+                email_verified: number;
+                display_name: string | null;
+                is_banned?: number;
+                ban_reason?: string | null;
+                is_admin?: number;
+              }
+            | undefined;
+
+          if (existingUser) {
+            if (existingUser.is_banned === 1) {
+              isBanned = true;
+              banReason = existingUser.ban_reason || null;
+              return;
+            }
+            userId = existingUser.id;
+            const nextAdmin = shouldBeAdmin || existingUser.is_admin ? 1 : 0;
+            db.prepare(
+              `UPDATE users SET email_verified = 1, is_admin = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), updated_at = ? WHERE id = ?`
+            ).run(nextAdmin, displayName, now, userId);
+          } else {
+            userId = crypto.randomUUID();
+            db.prepare(
+              `INSERT INTO users (id, email, password_hash, email_verified, display_name, is_admin, created_at, updated_at)
+               VALUES (?, ?, NULL, 1, ?, ?, ?, ?)`
+            ).run(userId, email, displayName, shouldBeAdmin, now, now);
+          }
+
+          const alreadyProviderForUser = db
+            .prepare(`SELECT id FROM oauth_accounts WHERE user_id = ? AND provider = ?`)
+            .get(userId, provider) as { id: string } | undefined;
+
+          if (alreadyProviderForUser) {
+            db.prepare(`UPDATE oauth_accounts SET provider_account_id = ? WHERE id = ?`).run(
+              providerAccountId,
+              alreadyProviderForUser.id
+            );
+          } else {
+            db.prepare(
+              `INSERT INTO oauth_accounts (id, user_id, provider, provider_account_id, created_at)
+               VALUES (?, ?, ?, ?, ?)`
+            ).run(crypto.randomUUID(), userId, provider, providerAccountId, now);
+          }
+        }
+      })();
+
+      if (isBanned) {
+        res.redirect(
+          `${returnTo}?oauth_error=${encodeURIComponent(`Account suspended${banReason ? `: ${banReason}` : '.'}`)}`
+        );
+        return;
+      }
+
+      createSessionForUser(userId, res, req);
+      res.redirect(`${returnTo}?oauth_login=${encodeURIComponent(provider)}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Unexpected OAuth callback error';
+      res.redirect(`${returnTo}?oauth_error=${encodeURIComponent(msg)}`);
+    }
+  }
+
+  app.get('/api/auth/oauth/:provider/callback', handleOAuthGetCallback);
+  app.get('/api/auth/callback/:provider', handleOAuthGetCallback);
 
   // POST /api/auth/register
   app.post('/api/auth/register', async (req, res) => {
@@ -1860,7 +2289,8 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const settings = db.prepare(`SELECT key, value FROM system_settings WHERE key LIKE 'oauth_%'`).all() as Array<{ key: string; value: string }>;
     const settingsMap = new Map(settings.map((s) => [s.key, s.value]));
 
-    const providers = ['google', 'microsoft', 'facebook', 'github', 'reddit'];
+    const providers = ['google', 'facebook'];
+    const publicOrigin = getPublicOrigin(req);
     const configs = providers.map((prov) => {
       const clientId = settingsMap.get(`oauth_${prov}_client_id`) || process.env[`${prov.toUpperCase()}_CLIENT_ID`] || '';
       const secret = settingsMap.get(`oauth_${prov}_client_secret`) || process.env[`${prov.toUpperCase()}_CLIENT_SECRET`] || '';
@@ -1870,6 +2300,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
         client_id: clientId,
         is_secret_set: Boolean(secret),
         enabled,
+        redirect_uri: `${publicOrigin}/api/auth/oauth/${prov}/callback`,
       };
     });
 
