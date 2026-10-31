@@ -440,7 +440,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     authUrl.searchParams.set('client_id', config.clientId);
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', 'email,public_profile');
+    authUrl.searchParams.set('scope', 'public_profile');
     authUrl.searchParams.set('state', stateNonce);
     res.redirect(authUrl.toString());
   });
