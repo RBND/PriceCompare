@@ -82,7 +82,7 @@ export const OfferingSchema = z.object({
     .optional()
     .default('')
     .refine((val) => !val || isValidHttpUrl(val), {
-      message: 'reference_url must use http: or https: protocol',
+      error: 'reference_url must use http: or https: protocol',
     }),
   price_cents: z.number().int().min(0).max(1_000_000_000),
   shipping_cents: z.number().int().min(0).max(100_000_000).default(0),
@@ -137,14 +137,14 @@ export const GuestMigrationPayloadSchema = z.object({
 });
 
 export const AuthRegisterSchema = z.object({
-  email: z.string().trim().email().max(255),
+  email: z.string().trim().max(255).pipe(z.email()),
   password: z.string().min(8).max(128),
   display_name: z.string().trim().min(1).max(100).optional(),
   guest_migration: GuestMigrationPayloadSchema.optional(),
 });
 
 export const AuthLoginSchema = z.object({
-  email: z.string().trim().email().max(255),
+  email: z.string().trim().max(255).pipe(z.email()),
   password: z.string().min(1).max(128),
   guest_migration: GuestMigrationPayloadSchema.optional(),
 });
@@ -162,7 +162,7 @@ export type OAuthProvider = z.infer<typeof OAuthProviderSchema>;
 export const OAuthSimulateSchema = z.object({
   provider: OAuthProviderSchema,
   provider_account_id: z.string().trim().min(1).max(255),
-  email: z.string().trim().email().max(255),
+  email: z.string().trim().max(255).pipe(z.email()),
   display_name: z.string().trim().min(1).max(100).optional(),
   guest_migration: GuestMigrationPayloadSchema.optional(),
 });
@@ -172,7 +172,7 @@ export const UpdateProfileSchema = z.object({
 });
 
 export const ChangeEmailRequestSchema = z.object({
-  new_email: z.string().trim().email().max(255),
+  new_email: z.string().trim().max(255).pipe(z.email()),
   current_password: z.string().min(1).max(128).optional(),
 });
 
@@ -192,7 +192,7 @@ export const RemovePasswordSchema = z.object({
 export const OAuthLinkSchema = z.object({
   provider: z.enum(['google', 'microsoft', 'facebook', 'github', 'reddit']),
   provider_account_id: z.string().trim().min(1).max(255).optional(),
-  email: z.string().trim().email().max(255).optional(),
+  email: z.string().trim().max(255).pipe(z.email()).optional(),
 });
 
 export const PasskeyRenameSchema = z.object({

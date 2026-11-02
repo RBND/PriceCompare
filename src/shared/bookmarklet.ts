@@ -3,11 +3,11 @@ import type { ProjectPayload, Part, Offering, BundleMapping, VendorProfile } fro
 import { isValidHttpUrl } from './types.js';
 
 export const BookmarkletPayloadSchema = z.object({
-  url: z.string().trim().refine((val) => isValidHttpUrl(val), {
-    message: 'url must be valid http/https',
+  url: z.string().trim().max(2048).refine((val) => isValidHttpUrl(val), {
+    error: 'url must be valid http/https',
   }),
-  canonicalUrl: z.string().trim().refine((val) => isValidHttpUrl(val), {
-    message: 'canonicalUrl must be valid http/https',
+  canonicalUrl: z.string().trim().max(2048).refine((val) => isValidHttpUrl(val), {
+    error: 'canonicalUrl must be valid http/https',
   }).optional().default(''),
   vendorHost: z.string().trim().max(150).default(''),
   partName: z.string().trim().max(300).default(''),
@@ -17,13 +17,13 @@ export const BookmarkletPayloadSchema = z.object({
   price: z.number().nullable().optional().default(null),
   currency: z.string().trim().max(10).default('USD'),
   packageYield: z.number().int().min(1).max(10000).default(1),
-  bundleKeywordsFound: z.array(z.string().max(100)).default([]),
+  bundleKeywordsFound: z.array(z.string().max(100)).max(50).default([]),
   isLikelyBundleOrPack: z.boolean().default(false),
   shippingCost: z.number().nullable().optional().default(null),
   freeShippingDetected: z.boolean().default(false),
   shippingNote: z.string().trim().max(250).optional().default(''),
   inStock: z.boolean().default(true),
-  extractionSource: z.array(z.string().max(50)).default([]),
+  extractionSource: z.array(z.string().max(50)).max(20).default([]),
   capturedAt: z.number().optional().default(() => Date.now()),
   installKey: z.string().trim().max(128).optional().default(''),
 });
