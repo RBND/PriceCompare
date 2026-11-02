@@ -73,6 +73,10 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
   );
   app.disable('x-powered-by');
   app.use(express.json({ limit: '256kb' }));
+  app.use((req, _res, next) => {
+    if (req.body === undefined) req.body = {};
+    next();
+  });
   app.use(cookieParser());
 
   function getClientIp(req?: express.Request): string {
@@ -2962,7 +2966,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
   const clientDistDir = path.join(process.cwd(), 'dist', 'client');
   if (fs.existsSync(clientDistDir)) {
     app.use(express.static(clientDistDir));
-    app.get('*', (req, res, next) => {
+    app.get('/{*splat}', (req, res, next) => {
       if (req.path.startsWith('/api')) {
         next();
         return;
@@ -2970,6 +2974,20 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       res.sendFile(path.join(clientDistDir, 'index.html'));
     });
   }
+
+  app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const status =
+      typeof (err as { status?: unknown })?.status === 'number' ? (err as { status: number }).status : 500;
+    if (status >= 500) console.error('[PriceIt] Unhandled error:', err);
+    if (res.headersSent) return;
+    if (req.path.startsWith('/api')) {
+      res.status(status).json({
+        error: status === 413 ? 'Payload too large' : status === 400 ? 'Malformed request' : 'Internal server error',
+      });
+    } else {
+      res.status(status).send('Internal Server Error');
+    }
+  });
 
   return app;
 }

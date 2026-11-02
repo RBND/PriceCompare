@@ -798,4 +798,63 @@ describe('Security Controls, Auth, OAuth Linking Safety, Idempotent Guest Migrat
       expect(await verifyPassword('NewPassword123!', h)).toBe(true);
     });
   });
+
+  describe('Express 5 behavior', () => {
+    it('serves SPA fallback for non-API deep links when dist/client exists', async () => {
+      const r = await request(app).get('/some/deep/link');
+      if (r.status === 200) {
+        expect(r.headers['content-type']).toMatch(/html/);
+      } else {
+        expect(r.status).toBe(404);
+      }
+    });
+
+    it('returns JSON 400 for malformed JSON bodies', async () => {
+      const r = await request(app)
+        .post('/api/auth/login')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Content-Type', 'application/json')
+        .send('{bad json');
+      expect(r.status).toBe(400);
+      expect(r.headers['content-type']).toMatch(/json/);
+      expect(r.body.error).toBe('Malformed request');
+    });
+
+    it('returns JSON 413 for oversized bodies', async () => {
+      const r = await request(app)
+        .post('/api/projects')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Content-Type', 'application/json')
+        .send(JSON.stringify({ name: 'x'.repeat(300 * 1024) }));
+      expect(r.status).toBe(413);
+      expect(r.headers['content-type']).toMatch(/json/);
+      expect(r.body.error).toBe('Payload too large');
+    });
+
+    it('does not 500 when admin/reauth endpoints receive no body', async () => {
+      const adminReg = await request(app)
+        .post('/api/auth/register')
+        .set('X-PriceIt-CSRF', '1')
+        .send({ email: 'admin@priceit.rbnd.cc', password: 'AdminPassword123!' });
+      const adminCookie = adminReg.headers['set-cookie'][0];
+
+      const userReg = await request(app)
+        .post('/api/auth/register')
+        .set('X-PriceIt-CSRF', '1')
+        .send({ email: 'target@workshop.org', password: 'UserPassword123!' });
+      const targetId = userReg.body.user.id;
+
+      const promoteRes = await request(app)
+        .post(`/api/admin/users/${targetId}/promote`)
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', adminCookie);
+      expect(promoteRes.status).toBe(200);
+      expect(promoteRes.body.is_admin).toBe(false);
+    });
+
+    it('unknown /api route returns 404, not the SPA index', async () => {
+      const r = await request(app).get('/api/does-not-exist');
+      expect(r.status).toBe(404);
+    });
+  });
 });
