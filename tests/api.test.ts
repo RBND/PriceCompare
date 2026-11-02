@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { initDatabase } from '../src/server/db.js';
 import { createApp } from '../src/server/app.js';
-import { AuthRateLimiter } from '../src/server/auth.js';
+import { AuthRateLimiter, hashPassword, verifyPassword } from '../src/server/auth.js';
 import { sanitizeSpreadsheetCell, generateProjectCsv, generateProjectExcelTsv } from '../src/shared/export.js';
 import { extractVendorFromUrl, isValidHttpUrl } from '../src/shared/types.js';
 import { DEMO_BRAKE_PROJECT } from '../src/shared/demoData.js';
@@ -765,6 +765,37 @@ describe('Security Controls, Auth, OAuth Linking Safety, Idempotent Guest Migrat
       });
       const tsv = generateProjectExcelTsv(DEMO_BRAKE_PROJECT, solved);
       expect(tsv).toContain('Project Name\t');
+    });
+  });
+
+  describe('bcryptjs v3 compatibility', () => {
+    const LEGACY_2A_HASH = '$2a$11$1Q0RKuDeUEKP5Jbi2TMGQuj/CMFw/fTQ4MCCMaa5ufaIcmJM7FmKy';
+
+    it('verifies legacy $2a$ hashes produced by bcryptjs 2.x and logs in via /api/auth/login', async () => {
+      expect(await verifyPassword('LegacyPassword123!', LEGACY_2A_HASH)).toBe(true);
+      expect(await verifyPassword('wrong', LEGACY_2A_HASH)).toBe(false);
+
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO users (id, email, password_hash, email_verified, display_name, created_at, updated_at)
+         VALUES (?, ?, ?, 1, ?, ?, ?)`
+      ).run('user-legacy-2a', 'legacy2a@workshop.org', LEGACY_2A_HASH, 'Legacy User', now, now);
+
+      const loginRes = await request(app)
+        .post('/api/auth/login')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'legacy2a@workshop.org',
+          password: 'LegacyPassword123!',
+        });
+      expect(loginRes.status).toBe(200);
+      expect(loginRes.body.user.email).toBe('legacy2a@workshop.org');
+    });
+
+    it('produces $2b$ cost-11 hashes that round-trip', async () => {
+      const h = await hashPassword('NewPassword123!');
+      expect(h.startsWith('$2b$11$')).toBe(true);
+      expect(await verifyPassword('NewPassword123!', h)).toBe(true);
     });
   });
 });
