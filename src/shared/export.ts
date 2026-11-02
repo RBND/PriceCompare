@@ -32,11 +32,16 @@ export function escapeCsvCell(value: string | number | null | undefined): string
   return safe;
 }
 
+export function escapeTsvCell(value: string | number | null | undefined): string {
+  const safe = sanitizeSpreadsheetCell(value);
+  return safe.replace(/[\t\r\n]+/g, ' ');
+}
+
 export function formatCentsToDollars(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
-export function generateProjectCsv(project: ProjectPayload, solverResult: SolverResult): string {
+function buildProjectSpreadsheetRows(project: ProjectPayload, solverResult: SolverResult): string[][] {
   const rows: string[][] = [];
 
   rows.push(['PROJECT BILL OF MATERIALS & OPTIMAL PURCHASE PLAN']);
@@ -126,13 +131,18 @@ export function generateProjectCsv(project: ProjectPayload, solverResult: Solver
     }
   }
 
+  return rows;
+}
+
+export function generateProjectCsv(project: ProjectPayload, solverResult: SolverResult): string {
+  const rows = buildProjectSpreadsheetRows(project, solverResult);
   return rows.map((row) => row.map((cell) => escapeCsvCell(cell)).join(',')).join('\r\n');
 }
 
 export function generateProjectExcelTsv(project: ProjectPayload, solverResult: SolverResult): string {
-  const csvLines = generateProjectCsv(project, solverResult);
-  // Also provide TSV format for direct Excel clipboard / .xls tab-delimited open with strict sanitization
-  return csvLines;
+  const rows = buildProjectSpreadsheetRows(project, solverResult);
+  // Provide true TSV format for direct Excel clipboard / .xls tab-delimited open with strict sanitization
+  return rows.map((row) => row.map((cell) => escapeTsvCell(cell)).join('\t')).join('\r\n');
 }
 
 export function escapeMarkdownTableCell(value: string | number | null | undefined): string {

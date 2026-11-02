@@ -22,9 +22,11 @@ import {
   OAuthLinkSchema,
   PasskeyRenameSchema,
   DeleteAccountSchema,
+  UpdateOAuthConfigSchema,
   ProjectPayloadSchema,
   GuestMigrationPayloadSchema,
   type AccountSecurityState,
+  type ProjectPayload,
   type UserPublic,
   type AdminUserPublic,
 } from '../shared/types.js';
@@ -41,6 +43,7 @@ import {
   getCurrentSessionHash,
   countUserLoginMethods,
   sendVerificationEmail,
+  sendPasswordResetEmail,
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
 } from './auth.js';
@@ -60,33 +63,47 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
   const app = express();
 
   // Security Controls & Hardening Checklist (Section 7.6)
-  app.set('trust proxy', true);
+  app.set(
+    'trust proxy',
+    process.env.TRUST_PROXY
+      ? process.env.TRUST_PROXY === 'true'
+        ? true
+        : Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY
+      : 1
+  );
   app.disable('x-powered-by');
   app.use(express.json({ limit: '256kb' }));
   app.use(cookieParser());
 
   function getClientIp(req?: express.Request): string {
     if (!req) return '127.0.0.1';
-    const cfIp = req.headers['cf-connecting-ip'];
-    if (cfIp && typeof cfIp === 'string') {
-      return cfIp.trim().slice(0, 100);
+    if (process.env.TRUST_CLOUDFLARE === 'true') {
+      const cfIp = req.headers['cf-connecting-ip'];
+      if (cfIp && typeof cfIp === 'string') {
+        return cfIp.trim().slice(0, 100);
+      }
     }
-    const realIp = req.headers['x-real-ip'];
-    if (realIp && typeof realIp === 'string') {
-      return realIp.trim().slice(0, 100);
-    }
-    const forwarded = req.headers['x-forwarded-for'];
-    if (forwarded && typeof forwarded === 'string') {
-      return forwarded.split(',')[0].trim().slice(0, 100);
-    }
-    return (req.ip || '127.0.0.1').slice(0, 100);
+    const rawIp = req.ip || req.socket?.remoteAddress || '127.0.0.1';
+    return rawIp.replace(/^::ffff:/, '').trim().slice(0, 100);
+  }
+
+  function pruneExpiredTokens(now: number): void {
+    db.prepare(`DELETE FROM webauthn_challenges WHERE expires_at <= ?`).run(now);
+    db.prepare(`DELETE FROM email_verifications WHERE expires_at <= ?`).run(now);
   }
 
   // Security headers
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    );
+    if (req.secure || process.env.NODE_ENV === 'production') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
     next();
   });
 
@@ -101,6 +118,26 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
   // eBay Buy Browse API OAuth token cache & item lookup endpoint
   let ebayTokenCache: { token: string; expiresAt: number } | null = null;
+  const ebayRateLimits = new Map<string, { count: number; resetAt: number }>();
+
+  function checkEbayRateLimit(ip: string): boolean {
+    const now = Date.now();
+    if (ebayRateLimits.size > 1000) {
+      for (const [k, v] of ebayRateLimits.entries()) {
+        if (now > v.resetAt) ebayRateLimits.delete(k);
+      }
+    }
+    const entry = ebayRateLimits.get(ip);
+    if (!entry || now > entry.resetAt) {
+      ebayRateLimits.set(ip, { count: 1, resetAt: now + 60000 });
+      return true;
+    }
+    if (entry.count >= 30) {
+      return false;
+    }
+    entry.count++;
+    return true;
+  }
 
   async function getEbayAccessToken(): Promise<string | null> {
     const clientId = process.env.EBAY_CLIENT_ID?.trim();
@@ -138,6 +175,12 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
   }
 
   app.get('/api/sourcing/ebay-item', async (req, res) => {
+    const ip = getClientIp(req);
+    if (!checkEbayRateLimit(ip)) {
+      res.status(429).json({ error: 'Too many eBay lookup requests. Please try again shortly.' });
+      return;
+    }
+
     try {
       const rawUrl = String(req.query.url || '').trim();
       const rawItemId = String(req.query.itemId || '').trim();
@@ -337,6 +380,9 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
   });
 
   function getPublicOrigin(req: express.Request): string {
+    if (process.env.APP_ORIGIN && process.env.APP_ORIGIN.trim()) {
+      return process.env.APP_ORIGIN.trim().replace(/\/+$/, '');
+    }
     const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || 'localhost:28085') as string;
     const host = String(hostHeader).split(',')[0].trim();
     const hostname = host.split(':')[0].toLowerCase();
@@ -440,7 +486,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     authUrl.searchParams.set('client_id', config.clientId);
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', 'public_profile');
+    authUrl.searchParams.set('scope', 'public_profile,email');
     authUrl.searchParams.set('state', stateNonce);
     res.redirect(authUrl.toString());
   });
@@ -542,12 +588,18 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
           sub?: string;
           id?: string;
           email?: string;
+          email_verified?: boolean;
           name?: string;
           given_name?: string;
         };
 
         if (!profileResp.ok || (!profile.sub && !profile.id)) {
           res.redirect(`${returnTo}?oauth_error=${encodeURIComponent('Failed to retrieve Google user profile.')}`);
+          return;
+        }
+
+        if (profile.email_verified === false) {
+          res.redirect(`${returnTo}?oauth_error=${encodeURIComponent('Google email address is not verified')}`);
           return;
         }
 
@@ -653,6 +705,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       // Mode 2: Sign-in or Registration via OAuth
       const adminEmails = [
         'myke.endrodi@gmail.com',
+        'myke.endres@gmail.com',
         'mykehype@gmail.com',
         'admin@priceit.rbnd.cc',
         process.env.ADMIN_EMAIL?.toLowerCase(),
@@ -718,9 +771,16 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
             }
             userId = existingUser.id;
             const nextAdmin = shouldBeAdmin || existingUser.is_admin ? 1 : 0;
-            db.prepare(
-              `UPDATE users SET email_verified = 1, is_admin = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), updated_at = ? WHERE id = ?`
-            ).run(nextAdmin, displayName, now, userId);
+            if (existingUser.email_verified === 0) {
+              db.prepare(
+                `UPDATE users SET password_hash = NULL, email_verified = 1, is_admin = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), updated_at = ? WHERE id = ?`
+              ).run(nextAdmin, displayName, now, userId);
+              db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(userId);
+            } else {
+              db.prepare(
+                `UPDATE users SET email_verified = 1, is_admin = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), updated_at = ? WHERE id = ?`
+              ).run(nextAdmin, displayName, now, userId);
+            }
           } else {
             userId = crypto.randomUUID();
             db.prepare(
@@ -803,7 +863,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const now = Date.now();
     const finalName = display_name || normalizedEmail.split('@')[0];
 
-    const adminEmails = ['myke.endrodi@gmail.com', 'mykehype@gmail.com', 'admin@priceit.rbnd.cc', process.env.ADMIN_EMAIL?.toLowerCase()].filter(Boolean);
+    const adminEmails = ['myke.endrodi@gmail.com', 'myke.endres@gmail.com', 'mykehype@gmail.com', 'admin@priceit.rbnd.cc', process.env.ADMIN_EMAIL?.toLowerCase()].filter(Boolean);
     const isAdmin = adminEmails.includes(normalizedEmail) ? 1 : 0;
 
     db.prepare(
@@ -853,7 +913,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
     const userRow = db
       .prepare(
-        `SELECT id, email, password_hash, email_verified, display_name, is_banned, ban_reason
+        `SELECT id, email, password_hash, email_verified, display_name, is_banned, ban_reason, password_reset_required
          FROM users WHERE email = ?`
       )
       .get(normalizedEmail) as
@@ -865,6 +925,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
           display_name: string | null;
           is_banned?: number;
           ban_reason?: string | null;
+          password_reset_required?: number;
         }
       | undefined;
 
@@ -877,6 +938,15 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       res.status(403).json({
         error: 'This account has been suspended by an administrator.',
         reason: userRow.ban_reason || null,
+      });
+      return;
+    }
+
+    if (userRow.password_reset_required === 1) {
+      res.status(403).json({
+        error:
+          'An administrator has required a password reset for your account. Please use your password reset link or token to set a new password.',
+        code: 'PASSWORD_RESET_REQUIRED',
       });
       return;
     }
@@ -903,6 +973,10 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
   // POST /api/auth/oauth/callback (Supports Google, Microsoft, Reddit, Meta with Section 7.3 Pre-Account Takeover Hardening)
   app.post('/api/auth/oauth/callback', (req, res) => {
+    if (process.env.NODE_ENV !== 'test') {
+      res.status(403).json({ error: 'Simulated OAuth endpoints are disabled outside test environments.' });
+      return;
+    }
     const parsed = OAuthSimulateSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
@@ -1047,6 +1121,16 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
   // WebAuthn Relying Party & AAGUID Resolution Helper
   function getRpConfig(req: express.Request): { rpID: string; rpName: string; origin: string } {
+    if (process.env.NODE_ENV === 'production' && process.env.APP_ORIGIN?.trim()) {
+      try {
+        const appUrl = new URL(process.env.APP_ORIGIN.trim());
+        return {
+          rpID: process.env.WEBAUTHN_RP_ID || appUrl.hostname,
+          rpName: 'PriceIt Workshop',
+          origin: appUrl.origin,
+        };
+      } catch {}
+    }
     const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || 'localhost') as string;
     const host = String(hostHeader).split(',')[0].trim();
     const hostname = host.split(':')[0];
@@ -1089,11 +1173,11 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const now = Date.now();
 
     const userRow = db
-      .prepare(`SELECT password_hash, is_passwordless FROM users WHERE id = ?`)
-      .get(user.id) as { password_hash: string | null; is_passwordless: number } | undefined;
+      .prepare(`SELECT password_hash, is_passwordless, display_name FROM users WHERE id = ?`)
+      .get(user.id) as { password_hash: string | null; is_passwordless: number; display_name: string | null } | undefined;
 
     const pendingEmailRow = db
-      .prepare(`SELECT new_email FROM email_verifications WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1`)
+      .prepare(`SELECT new_email FROM email_verifications WHERE user_id = ? AND new_email != '__PASSWORD_RESET__' AND expires_at > ? ORDER BY created_at DESC LIMIT 1`)
       .get(user.id, now) as { new_email: string } | undefined;
 
     const oauthRows = db
@@ -1125,10 +1209,20 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
         last_active_at: number;
       }>;
 
-    const state: AccountSecurityState = {
+    const { rpID } = getRpConfig(req);
+    const userIdBase64Url = Buffer.from(user.id, 'utf8').toString('base64url');
+
+    const state: AccountSecurityState & {
+      rp_id: string;
+      user_id_base64url: string;
+      display_name: string | null;
+    } = {
       has_password: Boolean(userRow && userRow.password_hash !== null),
       is_passwordless: Boolean(userRow && (userRow.is_passwordless || userRow.password_hash === null)),
       pending_email: pendingEmailRow ? pendingEmailRow.new_email : null,
+      rp_id: rpID,
+      user_id_base64url: userIdBase64Url,
+      display_name: userRow?.display_name ?? user.display_name,
       oauth_accounts: oauthRows,
       passkeys: passkeyRows.map((p) => {
         let parsedTransports: string[] = [];
@@ -1254,7 +1348,8 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const tokenHash = hashSessionToken(rawToken);
 
     db.transaction(() => {
-      db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(user.id);
+      pruneExpiredTokens(now);
+      db.prepare(`DELETE FROM email_verifications WHERE user_id = ? AND new_email != '__PASSWORD_RESET__'`).run(user.id);
       db.prepare(
         `INSERT INTO email_verifications (token_hash, user_id, new_email, expires_at, created_at)
          VALUES (?, ?, ?, ?, ?)`
@@ -1289,7 +1384,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const currentSessionHash = getCurrentSessionHash(req);
 
     const record = db
-      .prepare(`SELECT new_email, expires_at FROM email_verifications WHERE token_hash = ? AND user_id = ?`)
+      .prepare(`SELECT new_email, expires_at FROM email_verifications WHERE token_hash = ? AND user_id = ? AND new_email != '__PASSWORD_RESET__'`)
       .get(tokenHash, user.id) as { new_email: string; expires_at: number } | undefined;
 
     if (!record) {
@@ -1315,7 +1410,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
         now,
         user.id
       );
-      db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(user.id);
+      db.prepare(`DELETE FROM email_verifications WHERE user_id = ? AND new_email != '__PASSWORD_RESET__'`).run(user.id);
       // Revoke all other sessions on email change
       if (currentSessionHash) {
         db.prepare(`DELETE FROM sessions WHERE user_id = ? AND id != ?`).run(user.id, currentSessionHash);
@@ -1328,6 +1423,82 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
         ...user,
         email: record.new_email,
         email_verified: true,
+      },
+    });
+  });
+
+  // POST /api/auth/password/reset-complete (Complete forced or requested password reset using token)
+  app.post('/api/auth/password/reset-complete', async (req, res) => {
+    const rawToken = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+    const newPassword = typeof req.body?.new_password === 'string' ? req.body.new_password : '';
+
+    if (!rawToken || newPassword.length < 8 || newPassword.length > 128) {
+      res.status(400).json({ error: 'Valid reset token and new password (8–128 characters) are required.' });
+      return;
+    }
+
+    const now = Date.now();
+    const tokenHash = hashSessionToken(rawToken);
+    const row = db
+      .prepare(
+        `SELECT token_hash, user_id, new_email, expires_at FROM email_verifications WHERE token_hash = ? AND new_email = '__PASSWORD_RESET__'`
+      )
+      .get(tokenHash) as { token_hash: string; user_id: string; new_email: string; expires_at: number } | undefined;
+
+    if (!row || row.expires_at <= now) {
+      if (row) {
+        db.prepare(`DELETE FROM email_verifications WHERE token_hash = ?`).run(tokenHash);
+      }
+      res.status(400).json({ error: 'Invalid or expired password reset token.' });
+      return;
+    }
+
+    const userRow = db
+      .prepare(`SELECT id, email, display_name, is_admin, is_banned, ban_reason FROM users WHERE id = ?`)
+      .get(row.user_id) as
+      | {
+          id: string;
+          email: string;
+          display_name: string | null;
+          is_admin?: number;
+          is_banned?: number;
+          ban_reason?: string | null;
+        }
+      | undefined;
+
+    if (!userRow) {
+      res.status(400).json({ error: 'Invalid or expired password reset token.' });
+      return;
+    }
+
+    if (userRow.is_banned === 1) {
+      res.status(403).json({
+        error: 'This account has been suspended by an administrator.',
+        reason: userRow.ban_reason || null,
+      });
+      return;
+    }
+
+    const newHash = await hashPassword(newPassword);
+
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE users SET password_hash = ?, password_reset_required = 0, is_passwordless = 0, email_verified = 1, updated_at = ? WHERE id = ?`
+      ).run(newHash, now, userRow.id);
+      db.prepare(`DELETE FROM email_verifications WHERE token_hash = ?`).run(tokenHash);
+      db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(userRow.id);
+    })();
+
+    createSessionForUser(userRow.id, res, req);
+
+    res.json({
+      ok: true,
+      user: {
+        id: userRow.id,
+        email: userRow.email,
+        display_name: userRow.display_name || userRow.email.split('@')[0],
+        email_verified: true,
+        is_admin: Boolean(userRow.is_admin),
       },
     });
   });
@@ -1472,6 +1643,11 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
   // POST /api/auth/oauth/link
   app.post('/api/auth/oauth/link', (req, res) => {
+    if (process.env.NODE_ENV !== 'test') {
+      res.status(403).json({ error: 'Simulated OAuth endpoints are disabled outside test environments.' });
+      return;
+    }
+
     const user = getAuthenticatedUser(db, req);
     if (!user) {
       res.status(401).json({ error: 'Authentication required' });
@@ -1608,6 +1784,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const challengeId = crypto.randomUUID();
     const currentSessionHash = getCurrentSessionHash(req);
 
+    pruneExpiredTokens(now);
     db.prepare(
       `INSERT INTO webauthn_challenges (id, user_id, session_hash, challenge, purpose, expected_uv, expires_at, created_at)
        VALUES (?, ?, ?, ?, 'register', 'preferred', ?, ?)`
@@ -1633,9 +1810,11 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const credResponse = (req.body.response?.clientDataJSON ? req.body : req.body.response) || req.body;
     const now = Date.now();
     const currentSessionHash = getCurrentSessionHash(req);
+    const { rpID, origin } = getRpConfig(req);
+    const userIdBase64Url = Buffer.from(user.id, 'utf8').toString('base64url');
 
-    // Dev/Test Mock Passkey Bypass (enabled strictly for non-production Vitest execution)
-    if (process.env.NODE_ENV !== 'production' && mock_passkey) {
+    // Test Mock Passkey Bypass (enabled strictly for test environments)
+    if (process.env.NODE_ENV === 'test' && mock_passkey) {
       const mockId = req.body?.id || credResponse?.id || `mock-passkey-${crypto.randomUUID()}`;
       const mockName = custom_name || 'Mock Security Key';
       db.prepare(
@@ -1655,6 +1834,8 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
           registered_at: now,
         },
         can_switch_passwordless: user.has_password,
+        rp_id: rpID,
+        user_id_base64url: userIdBase64Url,
       });
       return;
     }
@@ -1682,7 +1863,6 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
 
     db.prepare(`DELETE FROM webauthn_challenges WHERE id = ?`).run(challengeRow.id);
 
-    const { rpID, origin } = getRpConfig(req);
     let verification;
     try {
       verification = await verifyRegistrationResponse({
@@ -1736,6 +1916,8 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
         registered_at: now,
       },
       can_switch_passwordless: user.has_password,
+      rp_id: rpID,
+      user_id_base64url: userIdBase64Url,
     });
   });
 
@@ -1751,6 +1933,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const now = Date.now();
     const challengeId = crypto.randomUUID();
 
+    pruneExpiredTokens(now);
     db.prepare(
       `INSERT INTO webauthn_challenges (id, user_id, session_hash, challenge, purpose, expected_uv, expires_at, created_at)
        VALUES (?, NULL, NULL, ?, 'login', 'preferred', ?, ?)`
@@ -1889,6 +2072,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const challengeId = crypto.randomUUID();
     const currentSessionHash = getCurrentSessionHash(req);
 
+    pruneExpiredTokens(now);
     db.prepare(
       `INSERT INTO webauthn_challenges (id, user_id, session_hash, challenge, purpose, expected_uv, expires_at, created_at)
        VALUES (?, ?, ?, ?, 'reauth', 'preferred', ?, ?)`
@@ -1910,9 +2094,18 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       return;
     }
 
-    const { challengeId, response: credResponse } = req.body;
+    const { challengeId, mock_reauth } = req.body;
+    const credResponse = (req.body.response?.clientDataJSON ? req.body : req.body.response) || req.body;
     const now = Date.now();
     const currentSessionHash = getCurrentSessionHash(req);
+
+    if (process.env.NODE_ENV === 'test' && mock_reauth) {
+      if (currentSessionHash) {
+        db.prepare(`UPDATE sessions SET reauthenticated_at = ? WHERE id = ?`).run(now, currentSessionHash);
+      }
+      res.json({ ok: true, verified: true });
+      return;
+    }
 
     const passkeyRow = db
       .prepare(`SELECT id, user_id, public_key, counter FROM passkeys WHERE id = ?`)
@@ -2065,11 +2258,17 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       return;
     }
 
+    const { rpID } = getRpConfig(req);
+    const userIdBase64Url = Buffer.from(user.id, 'utf8').toString('base64url');
+
     res.json({
       ok: true,
       remaining_credential_ids: remainingIds,
-      rpId: getRpConfig(req).rpID,
-      userIdBase64Url: Buffer.from(user.id).toString('base64url'),
+      credential_ids: remainingIds,
+      rpId: rpID,
+      rp_id: rpID,
+      userIdBase64Url,
+      user_id_base64url: userIdBase64Url,
     });
   });
 
@@ -2158,7 +2357,7 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     }
 
     const { rpID } = getRpConfig(req);
-    const userIdBase64Url = Buffer.from(user.id).toString('base64url');
+    const userIdBase64Url = Buffer.from(user.id, 'utf8').toString('base64url');
 
     db.transaction(() => {
       db.prepare(`DELETE FROM users WHERE id = ?`).run(user.id);
@@ -2168,7 +2367,9 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     res.json({
       ok: true,
       rpId: rpID,
+      rp_id: rpID,
       userIdBase64Url,
+      user_id_base64url: userIdBase64Url,
     });
   });
 
@@ -2266,16 +2467,17 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const now = Date.now();
 
     db.transaction(() => {
+      pruneExpiredTokens(now);
       db.prepare(`UPDATE users SET password_reset_required = 1 WHERE id = ?`).run(targetId);
       db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(targetId);
-      db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(targetId);
+      db.prepare(`DELETE FROM email_verifications WHERE user_id = ? AND new_email = '__PASSWORD_RESET__'`).run(targetId);
       db.prepare(
         `INSERT INTO email_verifications (token_hash, user_id, new_email, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?)`
-      ).run(tokenHash, targetId, targetUser.email, now + 60 * 60 * 1000, now);
+         VALUES (?, ?, '__PASSWORD_RESET__', ?, ?)`
+      ).run(tokenHash, targetId, now + 60 * 60 * 1000, now);
     })();
 
-    await sendVerificationEmail(targetUser.email, resetToken);
+    await sendPasswordResetEmail(targetUser.email, resetToken);
 
     res.json({
       ok: true,
@@ -2346,11 +2548,13 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     const admin = requireAdmin(req, res);
     if (!admin) return;
 
-    const { provider, client_id, client_secret, enabled } = req.body;
-    if (!provider) {
-      res.status(400).json({ error: 'Provider is required.' });
+    const parsed = UpdateOAuthConfigSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid OAuth configuration payload.', details: parsed.error.flatten() });
       return;
     }
+
+    const { provider, client_id, client_secret, enabled } = parsed.data;
 
     const now = Date.now();
     db.transaction(() => {
@@ -2556,10 +2760,45 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     res.json({ ok: true });
   });
 
+  function getUnfulfilledPartsForSolver(project: ProjectPayload): ProjectPayload['parts'] {
+    const fulfilledByPartId = new Map<string, number>();
+    for (const purchase of project.purchases || []) {
+      if (purchase.offering_id) {
+        const offQty = purchase.offering_qty || 1;
+        for (const bm of project.bundle_mappings || []) {
+          if (bm.offering_id === purchase.offering_id) {
+            fulfilledByPartId.set(
+              bm.part_id,
+              (fulfilledByPartId.get(bm.part_id) || 0) + bm.yield_qty * offQty
+            );
+          }
+        }
+      } else if (purchase.part_id) {
+        const pQty = purchase.part_qty || 1;
+        fulfilledByPartId.set(
+          purchase.part_id,
+          (fulfilledByPartId.get(purchase.part_id) || 0) + pQty
+        );
+      }
+    }
+    return project.parts
+      .map((p) => {
+        const done = fulfilledByPartId.get(p.id) || 0;
+        const rem = Math.max(0, p.required_qty - done);
+        return { ...p, required_qty: rem };
+      })
+      .filter((p) => p.required_qty > 0);
+  }
+
   // Rate limiter for public OpenGraph image rendering (DoS protection)
   const ogRateLimits = new Map<string, { count: number; resetAt: number }>();
   function checkOgRateLimit(ip: string): boolean {
     const now = Date.now();
+    if (ogRateLimits.size > 1000) {
+      for (const [k, v] of ogRateLimits.entries()) {
+        if (now > v.resetAt) ogRateLimits.delete(k);
+      }
+    }
     const entry = ogRateLimits.get(ip);
     if (!entry || now > entry.resetAt) {
       ogRateLimits.set(ip, { count: 1, resetAt: now + 60000 });
@@ -2601,7 +2840,10 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
     }
 
     try {
-      const solverResult = solveBundleOptimization(project);
+      const solverResult = solveBundleOptimization({
+        ...project,
+        parts: getUnfulfilledPartsForSolver(project),
+      });
       const theme = req.query.theme === 'light' ? 'light' : 'dark';
       const pngBuffer = renderOgCardPng(project, solverResult, theme);
 
@@ -2646,7 +2888,10 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       return;
     }
 
-    const solverResult = solveBundleOptimization(project);
+    const solverResult = solveBundleOptimization({
+      ...project,
+      parts: getUnfulfilledPartsForSolver(project),
+    });
     const theme = req.query.theme === 'light' ? 'light' : 'dark';
     const title = `PriceIt — ${escapeXml(project.name)}`;
     const costStr = `$${formatCentsToDollars(solverResult.grand_total_cents)}`;
@@ -2698,8 +2943,17 @@ export function createApp(db: Database.Database, rateLimiter = new AuthRateLimit
       return;
     }
 
+    const sanitizedProject = {
+      ...project,
+      purchases: (project.purchases || []).map((p) => ({
+        ...p,
+        order_number: undefined,
+        notes: undefined,
+      })),
+    };
+
     res.json({
-      project,
+      project: sanitizedProject,
       read_only: true,
     });
   });

@@ -156,9 +156,11 @@ async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const err = new Error(data.error || `Request failed with status ${res.status}`) as Error & {
       status?: number;
+      code?: string;
       current_version?: number;
     };
     err.status = res.status;
+    err.code = data.code;
     err.current_version = data.current_version;
     throw err;
   }
@@ -195,6 +197,8 @@ export function App() {
           path.startsWith('/privacy') ||
           path.startsWith('/terms') ||
           search.includes('share=') ||
+          search.includes('verify_email=') ||
+          search.includes('reset_password=') ||
           hash.includes('import_part=') ||
           window.name === 'priceit_capture_window'
         ) {
@@ -208,6 +212,8 @@ export function App() {
     return false;
   });
   const [tourStepIndex, setTourStepIndex] = useState(0);
+  const preTourProjectRef = useRef<(ProjectPayload & { share_token?: string | null }) | null>(null);
+  const tourLoadedDemoRef = useRef<boolean>(false);
   const [installKey, setInstallKey] = useState<string>(() => {
     try {
       if (typeof localStorage !== 'undefined') {
@@ -417,6 +423,8 @@ export function App() {
   }
 
   function handleStartTour() {
+    preTourProjectRef.current = structuredClone(activeProject);
+    tourLoadedDemoRef.current = false;
     setTourStepIndex(0);
     setActiveTab('bom');
     setIsTourOpen(true);
@@ -425,23 +433,30 @@ export function App() {
   function handleCloseTour() {
     setIsTourOpen(false);
     setActiveTab('bom');
-    if (!isReadOnlyShare) {
+    if (tourLoadedDemoRef.current && !isReadOnlyShare) {
       setConflictServerVersion(null);
-      const blank: ProjectPayload = {
-        id: undefined,
-        client_project_uuid: makeClientId('uuid'),
-        name: 'Untitled Parts Project',
-        category: 'Custom Project',
-        currency: 'USD',
-        default_tax_bps: 700,
-        version: 1,
-        parts: [],
-        offerings: [],
-        bundle_mappings: [],
-        vendor_profiles: [],
-      };
-      updateProject(() => blank, true);
+      if (preTourProjectRef.current) {
+        const restored = preTourProjectRef.current;
+        updateProject(() => restored, true);
+      } else {
+        const blank: ProjectPayload = {
+          id: undefined,
+          client_project_uuid: makeClientId('uuid'),
+          name: 'Untitled Parts Project',
+          category: 'Custom Project',
+          currency: 'USD',
+          default_tax_bps: 700,
+          version: 1,
+          parts: [],
+          offerings: [],
+          bundle_mappings: [],
+          vendor_profiles: [],
+        };
+        updateProject(() => blank, true);
+      }
     }
+    tourLoadedDemoRef.current = false;
+    preTourProjectRef.current = null;
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(TUTORIAL_COMPLETED_KEY, 'true');
@@ -451,6 +466,10 @@ export function App() {
 
   function handleTourStepChange(nextIndex: number, step: TourStep) {
     if (tourStepIndex === 0 && nextIndex > 0 && !isReadOnlyShare) {
+      if (!preTourProjectRef.current) {
+        preTourProjectRef.current = structuredClone(activeProject);
+      }
+      tourLoadedDemoRef.current = true;
       setConflictServerVersion(null);
       const demoCopy: ProjectPayload = {
         ...structuredClone(DEMO_BRAKE_PROJECT),
@@ -470,11 +489,14 @@ export function App() {
   }
 
   // Auth modal state
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authDisplayName, setAuthDisplayName] = useState('');
   const [authError, setAuthError] = useState('');
+  const [resetTokenInput, setResetTokenInput] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
 
   // Quick-add Part state
   const [newPartName, setNewPartName] = useState('');
@@ -569,7 +591,7 @@ export function App() {
     activeProject.default_tax_bps,
   ]);
 
-  // Check URL for ?share=<token>, OAuth redirect params, or logged-in session on startup
+  // Check URL for ?share=<token>, OAuth redirect params, email verification, password reset, or logged-in session on startup
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const pathMatch = window.location.pathname.match(/^\/share\/([A-Za-z0-9_-]+)/);
@@ -577,12 +599,16 @@ export function App() {
     const oauthLogin = params.get('oauth_login');
     const oauthLinked = params.get('oauth_linked');
     const oauthErrorParam = params.get('oauth_error');
+    const verifyEmailParam = params.get('verify_email');
+    const resetPasswordParam = params.get('reset_password');
 
-    if (oauthLogin || oauthLinked || oauthErrorParam) {
+    if (oauthLogin || oauthLinked || oauthErrorParam || verifyEmailParam || resetPasswordParam) {
       const nextParams = new URLSearchParams(window.location.search);
       nextParams.delete('oauth_login');
       nextParams.delete('oauth_linked');
       nextParams.delete('oauth_error');
+      nextParams.delete('verify_email');
+      nextParams.delete('reset_password');
       const cleanQuery = nextParams.toString();
       if (window.history && typeof window.history.replaceState === 'function') {
         window.history.replaceState(
@@ -596,6 +622,16 @@ export function App() {
     if (oauthErrorParam) {
       setAuthError(oauthErrorParam);
       setStatusBanner({ type: 'error', text: oauthErrorParam });
+    }
+
+    if (resetPasswordParam) {
+      setIsTourOpen(false);
+      setResetTokenInput(resetPasswordParam);
+      setAuthMode('reset');
+      setAuthError('');
+      setTimeout(() => {
+        authDialogRef.current?.showModal();
+      }, 0);
     }
 
     if (shareToken) {
@@ -656,6 +692,39 @@ export function App() {
             setStatusBanner({
               type: 'success',
               text: `Connected ${oauthLinked.toUpperCase()} account successfully.`,
+            });
+          }
+        }
+        if (verifyEmailParam) {
+          setIsTourOpen(false);
+          try {
+            const verifyRes = await apiFetch<{
+              ok: boolean;
+              user: UserPublic;
+              rp_id?: string;
+              rpId?: string;
+              user_id_base64url?: string;
+              userIdBase64Url?: string;
+            }>('/api/auth/email/verify', {
+              method: 'POST',
+              body: JSON.stringify({ token: verifyEmailParam }),
+            });
+            if (verifyRes.user) {
+              setUser(verifyRes.user);
+              const rpId = verifyRes.rp_id || verifyRes.rpId;
+              const userIdB64 = verifyRes.user_id_base64url || verifyRes.userIdBase64Url;
+              if (rpId && userIdB64) {
+                await syncCurrentUserDetails(rpId, userIdB64, verifyRes.user.email, verifyRes.user.display_name);
+              }
+              setStatusBanner({
+                type: 'success',
+                text: `Email verified and updated to ${verifyRes.user.email}!`,
+              });
+            }
+          } catch (err: unknown) {
+            setStatusBanner({
+              type: 'error',
+              text: err instanceof Error ? err.message : 'Email verification failed',
             });
           }
         }
@@ -1652,7 +1721,42 @@ export function App() {
     return undefined;
   }
 
+  async function handlePasswordResetComplete(e: React.FormEvent) {
+    e.preventDefault();
+    setAuthError('');
+    if (resetNewPassword !== resetConfirmPassword) {
+      setAuthError('New passwords do not match.');
+      return;
+    }
+    try {
+      const res = await apiFetch<{ ok: boolean; user: UserPublic }>('/api/auth/password/reset-complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          token: resetTokenInput.trim(),
+          new_password: resetNewPassword,
+        }),
+      });
+      setUser(res.user);
+      setResetTokenInput('');
+      setResetNewPassword('');
+      setResetConfirmPassword('');
+      setAuthMode('login');
+      authDialogRef.current?.close();
+      await refreshCloudProjectsAndSelect(true);
+      setStatusBanner({
+        type: 'success',
+        text: 'Password reset complete! You are now signed in.',
+      });
+    } catch (err: unknown) {
+      setAuthError(err instanceof Error ? err.message : 'Password reset failed');
+    }
+  }
+
   async function handleAuthSubmit(e: React.FormEvent) {
+    if (authMode === 'reset') {
+      await handlePasswordResetComplete(e);
+      return;
+    }
     e.preventDefault();
     setAuthError('');
     try {
@@ -1685,6 +1789,9 @@ export function App() {
           : `Signed in as ${res.user.display_name}.`,
       });
     } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'PASSWORD_RESET_REQUIRED') {
+        setAuthMode('reset');
+      }
       setAuthError(err instanceof Error ? err.message : 'Authentication failed');
     }
   }
@@ -1712,7 +1819,34 @@ export function App() {
     setStatusBanner({ type: 'info', text: 'Signed out. Switched to local Guest workspace.' });
   }
 
-  // WebAuthn Signal API helpers
+  // WebAuthn Signal API helpers & Passkey Re-Authentication
+  async function performPasskeyReauth(): Promise<boolean> {
+    if (typeof window === 'undefined' || !window.PublicKeyCredential) {
+      throw new Error('WebAuthn / Passkeys are not supported in this browser.');
+    }
+    webauthnAbortRef.current?.abort();
+    webauthnAbortRef.current = new AbortController();
+
+    const rawRes = await apiFetch<any>('/api/auth/reauth/options', {
+      method: 'POST',
+    });
+    const options = rawRes.options || rawRes;
+    const challengeId = rawRes.challengeId;
+
+    const asseResp = await startAuthentication({
+      optionsJSON: options,
+    });
+
+    const verifyRes = await apiFetch<{ verified?: boolean; ok?: boolean }>('/api/auth/reauth/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        challengeId,
+        ...asseResp,
+      }),
+    });
+    return Boolean(verifyRes.verified ?? verifyRes.ok ?? true);
+  }
+
   async function syncAcceptedCredentials(rpId: string, userIdBase64Url: string, credentialIds: string[]) {
     if (typeof window === 'undefined') return;
     try {
@@ -1767,8 +1901,10 @@ export function App() {
       const res = await apiFetch<AccountSecurityState>('/api/auth/account');
       setAccountSecurity(res);
       setProfileDisplayName(res.display_name || user?.display_name || '');
-      if (res.rp_id && res.user_id_base64url) {
-        await syncAcceptedCredentials(res.rp_id, res.user_id_base64url, res.passkeys.map((p) => p.id));
+      const rpId = res.rp_id || (res as any).rpId;
+      const userIdB64 = res.user_id_base64url || (res as any).userIdBase64Url;
+      if (rpId && userIdB64) {
+        await syncAcceptedCredentials(rpId, userIdB64, res.passkeys.map((p) => p.id));
       }
       return res;
     } catch (err: unknown) {
@@ -1802,19 +1938,26 @@ export function App() {
     e.preventDefault();
     setAccountMessage(null);
     try {
-      const res = await apiFetch<{ user: UserPublic }>('/api/auth/profile', {
+      const res = await apiFetch<{
+        user: UserPublic;
+        rp_id?: string;
+        rpId?: string;
+        user_id_base64url?: string;
+        userIdBase64Url?: string;
+      }>('/api/auth/profile', {
         method: 'PUT',
         body: JSON.stringify({ display_name: profileDisplayName }),
       });
       setUser(res.user);
       setAccountMessage({ type: 'success', text: 'Display name updated.' });
-      if (accountSecurity?.rp_id && accountSecurity?.user_id_base64url) {
-        await syncCurrentUserDetails(
-          accountSecurity.rp_id,
-          accountSecurity.user_id_base64url,
-          res.user.email,
-          res.user.display_name
-        );
+      const rpId = res.rp_id || res.rpId || accountSecurity?.rp_id || (accountSecurity as any)?.rpId;
+      const userIdB64 =
+        res.user_id_base64url ||
+        res.userIdBase64Url ||
+        accountSecurity?.user_id_base64url ||
+        (accountSecurity as any)?.userIdBase64Url;
+      if (rpId && userIdB64) {
+        await syncCurrentUserDetails(rpId, userIdB64, res.user.email, res.user.display_name);
       }
       await fetchAccountSecurity();
     } catch (err: unknown) {
@@ -1828,17 +1971,26 @@ export function App() {
   async function handleRequestEmailChange(e: React.FormEvent) {
     e.preventDefault();
     setAccountMessage(null);
+    const doRequest = () =>
+      apiFetch<{ ok: boolean; pending_email: string; dev_token?: string }>('/api/auth/email/request', {
+        method: 'POST',
+        body: JSON.stringify({
+          new_email: newEmailInput.trim(),
+          current_password: emailCurrentPassword || undefined,
+        }),
+      });
     try {
-      const res = await apiFetch<{ ok: boolean; pending_email: string; dev_token?: string }>(
-        '/api/auth/email/request',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            new_email: newEmailInput.trim(),
-            current_password: emailCurrentPassword || undefined,
-          }),
+      let res: { ok: boolean; pending_email: string; dev_token?: string };
+      try {
+        res = await doRequest();
+      } catch (err: unknown) {
+        if ((err as { code?: string })?.code === 'REAUTH_REQUIRED') {
+          await performPasskeyReauth();
+          res = await doRequest();
+        } else {
+          throw err;
         }
-      );
+      }
       setAccountMessage({
         type: 'info',
         text: res.dev_token
@@ -1850,6 +2002,7 @@ export function App() {
       }
       await fetchAccountSecurity();
     } catch (err: unknown) {
+      if ((err as Error).name === 'AbortError') return;
       setAccountMessage({
         type: 'error',
         text: err instanceof Error ? err.message : 'Failed to request email change',
@@ -1861,7 +2014,14 @@ export function App() {
     e.preventDefault();
     setAccountMessage(null);
     try {
-      const res = await apiFetch<{ ok: boolean; user: UserPublic }>('/api/auth/email/verify', {
+      const res = await apiFetch<{
+        ok: boolean;
+        user: UserPublic;
+        rp_id?: string;
+        rpId?: string;
+        user_id_base64url?: string;
+        userIdBase64Url?: string;
+      }>('/api/auth/email/verify', {
         method: 'POST',
         body: JSON.stringify({ token: verifyEmailTokenInput.trim() }),
       });
@@ -1870,13 +2030,14 @@ export function App() {
       setNewEmailInput('');
       setEmailCurrentPassword('');
       setAccountMessage({ type: 'success', text: `Email successfully verified and updated to ${res.user.email}!` });
-      if (accountSecurity?.rp_id && accountSecurity?.user_id_base64url) {
-        await syncCurrentUserDetails(
-          accountSecurity.rp_id,
-          accountSecurity.user_id_base64url,
-          res.user.email,
-          res.user.display_name
-        );
+      const rpId = res.rp_id || res.rpId || accountSecurity?.rp_id || (accountSecurity as any)?.rpId;
+      const userIdB64 =
+        res.user_id_base64url ||
+        res.userIdBase64Url ||
+        accountSecurity?.user_id_base64url ||
+        (accountSecurity as any)?.userIdBase64Url;
+      if (rpId && userIdB64) {
+        await syncCurrentUserDetails(rpId, userIdB64, res.user.email, res.user.display_name);
       }
       await fetchAccountSecurity();
     } catch (err: unknown) {
@@ -2023,7 +2184,9 @@ export function App() {
         passkey: PasskeyPublic;
         can_switch_passwordless: boolean;
         rp_id?: string;
+        rpId?: string;
         user_id_base64url?: string;
+        userIdBase64Url?: string;
       }>('/api/auth/passkeys/register/verify', {
         method: 'POST',
         body: JSON.stringify({
@@ -2040,10 +2203,16 @@ export function App() {
       });
 
       const updatedSec = await fetchAccountSecurity();
-      if (updatedSec?.rp_id && updatedSec?.user_id_base64url) {
+      const rpId = verifyRes.rp_id || verifyRes.rpId || updatedSec?.rp_id || (updatedSec as any)?.rpId;
+      const userIdB64 =
+        verifyRes.user_id_base64url ||
+        verifyRes.userIdBase64Url ||
+        updatedSec?.user_id_base64url ||
+        (updatedSec as any)?.userIdBase64Url;
+      if (rpId && userIdB64 && updatedSec) {
         await syncAcceptedCredentials(
-          updatedSec.rp_id,
-          updatedSec.user_id_base64url,
+          rpId,
+          userIdB64,
           updatedSec.passkeys.map((p) => p.id)
         );
       }
@@ -2081,12 +2250,24 @@ export function App() {
   async function handleRevokePasskey(passkeyId: string) {
     if (!window.confirm('Are you sure you want to revoke this passkey?')) return;
     try {
-      const res = await apiFetch<{ ok: boolean; credential_ids?: string[]; rp_id?: string; user_id_base64url?: string }>(
-        `/api/auth/passkeys/${encodeURIComponent(passkeyId)}`,
-        { method: 'DELETE' }
-      );
-      if (res.rp_id && res.user_id_base64url && res.credential_ids) {
-        await syncAcceptedCredentials(res.rp_id, res.user_id_base64url, res.credential_ids);
+      const res = await apiFetch<{
+        ok: boolean;
+        credential_ids?: string[];
+        remaining_credential_ids?: string[];
+        rp_id?: string;
+        rpId?: string;
+        user_id_base64url?: string;
+        userIdBase64Url?: string;
+      }>(`/api/auth/passkeys/${encodeURIComponent(passkeyId)}`, { method: 'DELETE' });
+      const rpId = res.rp_id || res.rpId || accountSecurity?.rp_id || (accountSecurity as any)?.rpId;
+      const userIdB64 =
+        res.user_id_base64url ||
+        res.userIdBase64Url ||
+        accountSecurity?.user_id_base64url ||
+        (accountSecurity as any)?.userIdBase64Url;
+      const credIds = res.credential_ids || res.remaining_credential_ids;
+      if (rpId && userIdB64 && Array.isArray(credIds)) {
+        await syncAcceptedCredentials(rpId, userIdB64, credIds);
       }
       setAccountMessage({ type: 'success', text: 'Passkey revoked.' });
       await fetchAccountSecurity();
@@ -2191,20 +2372,48 @@ export function App() {
       return;
     }
 
-    try {
-      const res = await apiFetch<{ ok: boolean; rp_id?: string; user_id_base64url?: string }>(
-        '/api/auth/account/delete',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            confirmation: 'DELETE',
-            current_password: deleteAccountPassword || undefined,
-          }),
-        }
-      );
+    const doDelete = () =>
+      apiFetch<{
+        ok: boolean;
+        rp_id?: string;
+        rpId?: string;
+        user_id_base64url?: string;
+        userIdBase64Url?: string;
+      }>('/api/auth/account/delete', {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmation: 'DELETE',
+          current_password: deleteAccountPassword || undefined,
+        }),
+      });
 
-      if (res.rp_id && res.user_id_base64url) {
-        await syncAcceptedCredentials(res.rp_id, res.user_id_base64url, []);
+    try {
+      let res: {
+        ok: boolean;
+        rp_id?: string;
+        rpId?: string;
+        user_id_base64url?: string;
+        userIdBase64Url?: string;
+      };
+      try {
+        res = await doDelete();
+      } catch (err: unknown) {
+        if ((err as { code?: string })?.code === 'REAUTH_REQUIRED') {
+          await performPasskeyReauth();
+          res = await doDelete();
+        } else {
+          throw err;
+        }
+      }
+
+      const rpId = res.rp_id || res.rpId || accountSecurity?.rp_id || (accountSecurity as any)?.rpId;
+      const userIdB64 =
+        res.user_id_base64url ||
+        res.userIdBase64Url ||
+        accountSecurity?.user_id_base64url ||
+        (accountSecurity as any)?.userIdBase64Url;
+      if (rpId && userIdB64) {
+        await syncAcceptedCredentials(rpId, userIdB64, []);
       }
 
       settingsDialogRef.current?.close();
@@ -5597,7 +5806,11 @@ export function App() {
           style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
         >
           <h2 id="auth-dialog-title" className="font-bold text-sm uppercase tracking-wider">
-            {authMode === 'login' ? 'Sign In to PriceIt Cloud' : 'Create PriceIt Account'}
+            {authMode === 'login'
+              ? 'Sign In to PriceIt Cloud'
+              : authMode === 'register'
+                ? 'Create PriceIt Account'
+                : 'Complete Password Reset'}
           </h2>
           <button
             type="button"
@@ -5637,113 +5850,186 @@ export function App() {
             </div>
           )}
 
-          <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3">
-            {authMode === 'register' && (
+          {authMode === 'reset' ? (
+            <form onSubmit={handlePasswordResetComplete} className="flex flex-col gap-3">
               <div>
-                <label className="block text-xs font-mono-tabular uppercase mb-1">Display Name</label>
+                <label className="block text-xs font-mono-tabular uppercase mb-1">Reset Token</label>
                 <input
                   type="text"
-                  value={authDisplayName}
-                  onChange={(e) => setAuthDisplayName(e.target.value)}
-                  placeholder="Alex Rivera"
-                  className="w-full px-2.5 py-1.5 text-xs border"
+                  required
+                  value={resetTokenInput}
+                  onChange={(e) => setResetTokenInput(e.target.value)}
+                  placeholder="Paste password reset token"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
                   style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
                 />
               </div>
-            )}
 
-            <div>
-              <label className="block text-xs font-mono-tabular uppercase mb-1">Email Address</label>
-              <input
-                type="email"
-                required
-                autoComplete="username webauthn"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-                placeholder="engineer@workshop.io"
-                className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
-                style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-mono-tabular uppercase mb-1">
+                  New Password (min 8 chars)
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={8}
+                  value={resetNewPassword}
+                  onChange={(e) => setResetNewPassword(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                  style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                />
+              </div>
 
-            <div>
-              <label className="block text-xs font-mono-tabular uppercase mb-1">
-                Password (min 8 chars)
-              </label>
-              <input
-                type="password"
-                required
-                minLength={8}
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
-                style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-mono-tabular uppercase mb-1">
+                  Confirm New Password
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={8}
+                  value={resetConfirmPassword}
+                  onChange={(e) => setResetConfirmPassword(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                  style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                />
+              </div>
 
-            <button
-              type="submit"
-              className="w-full py-2 text-xs font-bold uppercase border cursor-pointer"
-              style={{
-                backgroundColor: 'var(--accent-amber-bg)',
-                borderColor: 'var(--accent-amber)',
-                color: 'var(--accent-amber)',
-              }}
-            >
-              {authMode === 'login' ? 'Sign In & Sync Projects' : 'Create Account & Migrate'}
-            </button>
-
-            {authMode === 'login' && (
               <button
-                type="button"
-                onClick={handlePasskeySignIn}
-                className="w-full py-2 text-xs font-semibold flex items-center justify-center gap-1.5 border cursor-pointer"
+                type="submit"
+                className="w-full py-2 text-xs font-bold uppercase border cursor-pointer"
                 style={{
-                  backgroundColor: 'var(--bg-elevated)',
-                  borderColor: 'var(--border-subtle)',
-                  color: 'var(--text-primary)',
+                  backgroundColor: 'var(--accent-amber-bg)',
+                  borderColor: 'var(--accent-amber)',
+                  color: 'var(--accent-amber)',
                 }}
               >
-                <Key className="w-3.5 h-3.5 text-[var(--accent-amber)]" />
-                Sign In with Passkey / WebAuthn
+                Reset Password & Sign In
               </button>
-            )}
-          </form>
+            </form>
+          ) : (
+            <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3">
+              {authMode === 'register' && (
+                <div>
+                  <label className="block text-xs font-mono-tabular uppercase mb-1">Display Name</label>
+                  <input
+                    type="text"
+                    value={authDisplayName}
+                    onChange={(e) => setAuthDisplayName(e.target.value)}
+                    placeholder="Alex Rivera"
+                    className="w-full px-2.5 py-1.5 text-xs border"
+                    style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                  />
+                </div>
+              )}
 
-          <div className="border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
-            <div className="text-[11px] font-mono-tabular uppercase mb-2" style={{ color: 'var(--text-secondary)' }}>
-              Or Continue with Federated OAuth Provider
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {(['google', 'facebook'] as const).map((prov) => (
-                <button
-                  key={prov}
-                  type="button"
-                  onClick={() => handleOAuthSignIn(prov)}
-                  className="px-3 py-1.5 text-xs font-mono-tabular uppercase border cursor-pointer hover:bg-[var(--bg-hover)]"
+              <div>
+                <label className="block text-xs font-mono-tabular uppercase mb-1">Email Address</label>
+                <input
+                  type="email"
+                  required
+                  autoComplete="username webauthn"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="engineer@workshop.io"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
                   style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
-                >
-                  {prov}
-                </button>
-              ))}
-            </div>
-          </div>
+                />
+              </div>
 
-          <div className="text-xs text-center">
-            {authMode === 'login' ? (
-              <span>
-                Need an account?{' '}
+              <div>
+                <label className="block text-xs font-mono-tabular uppercase mb-1">
+                  Password (min 8 chars)
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={8}
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono-tabular border"
+                  style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2 text-xs font-bold uppercase border cursor-pointer"
+                style={{
+                  backgroundColor: 'var(--accent-amber-bg)',
+                  borderColor: 'var(--accent-amber)',
+                  color: 'var(--accent-amber)',
+                }}
+              >
+                {authMode === 'login' ? 'Sign In & Sync Projects' : 'Create Account & Migrate'}
+              </button>
+
+              {authMode === 'login' && (
                 <button
                   type="button"
-                  onClick={() => setAuthMode('register')}
-                  className="underline font-semibold cursor-pointer"
+                  onClick={handlePasskeySignIn}
+                  className="w-full py-2 text-xs font-semibold flex items-center justify-center gap-1.5 border cursor-pointer"
+                  style={{
+                    backgroundColor: 'var(--bg-elevated)',
+                    borderColor: 'var(--border-subtle)',
+                    color: 'var(--text-primary)',
+                  }}
                 >
-                  Register here
+                  <Key className="w-3.5 h-3.5 text-[var(--accent-amber)]" />
+                  Sign In with Passkey / WebAuthn
                 </button>
-              </span>
+              )}
+            </form>
+          )}
+
+          {authMode !== 'reset' && (
+            <div className="border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="text-[11px] font-mono-tabular uppercase mb-2" style={{ color: 'var(--text-secondary)' }}>
+                Or Continue with Federated OAuth Provider
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {(['google', 'facebook'] as const).map((prov) => (
+                  <button
+                    key={prov}
+                    type="button"
+                    onClick={() => handleOAuthSignIn(prov)}
+                    className="px-3 py-1.5 text-xs font-mono-tabular uppercase border cursor-pointer hover:bg-[var(--bg-hover)]"
+                    style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }}
+                  >
+                    {prov}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="text-xs text-center flex flex-col gap-1">
+            {authMode === 'login' ? (
+              <>
+                <span>
+                  Need an account?{' '}
+                  <button
+                    type="button"
+                    onClick={() => setAuthMode('register')}
+                    className="underline font-semibold cursor-pointer"
+                  >
+                    Register here
+                  </button>
+                </span>
+                <span>
+                  Have a reset token?{' '}
+                  <button
+                    type="button"
+                    onClick={() => setAuthMode('reset')}
+                    className="underline font-semibold cursor-pointer"
+                  >
+                    Reset password
+                  </button>
+                </span>
+              </>
             ) : (
               <span>
-                Already registered?{' '}
+                {authMode === 'register' ? 'Already registered? ' : 'Back to '}
                 <button
                   type="button"
                   onClick={() => setAuthMode('login')}

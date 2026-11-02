@@ -198,11 +198,10 @@ export function initDatabase(dbPath?: string): Database.Database {
   ensureColumn('sessions', 'last_active_at', 'INTEGER');
   ensureColumn('sessions', 'reauthenticated_at', 'INTEGER');
 
-  // Auto-promote primary admin (e.g. Myke or first registered user)
+  // Auto-promote primary admin (e.g. Myke)
   db.exec(`
-    UPDATE users SET is_admin = 1 
-    WHERE email IN ('myke.endrodi@gmail.com', 'mykehype@gmail.com', 'admin@priceit.rbnd.cc') 
-       OR id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1);
+    UPDATE users SET is_admin = 1
+    WHERE LOWER(email) IN ('myke.endrodi@gmail.com', 'myke.endres@gmail.com', 'mykehype@gmail.com', 'admin@priceit.rbnd.cc');
   `);
 
   // Backfill session_uid and last_active_at for any pre-existing sessions

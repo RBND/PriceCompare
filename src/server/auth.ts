@@ -89,12 +89,24 @@ export function csrfProtectionMiddleware(req: Request, res: Response, next: Next
   if (origin) {
     try {
       const originUrl = new URL(origin);
-      const hostHeader = req.headers['x-forwarded-host'] || req.headers.host;
-      const rawHost = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
-      const expectedHost = rawHost ? rawHost.split(',')[0].trim() : undefined;
-      if (expectedHost && originUrl.host !== expectedHost) {
-        res.status(403).json({ error: 'CSRF check failed: Origin mismatch' });
-        return;
+      const originHost = originUrl.host.toLowerCase();
+      const appOrigin = process.env.APP_ORIGIN ? new URL(process.env.APP_ORIGIN).origin : undefined;
+
+      if (process.env.NODE_ENV === 'production' && appOrigin) {
+        if (originUrl.origin !== appOrigin) {
+          res.status(403).json({ error: 'CSRF check failed: Origin mismatch' });
+          return;
+        }
+      } else {
+        const hostHeader = req.headers['x-forwarded-host'] || req.headers.host;
+        const rawHost = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+        const expectedHost = rawHost ? rawHost.split(',')[0].trim().toLowerCase() : undefined;
+        const matchesExpectedHost = !expectedHost || originHost === expectedHost;
+        const matchesAppOrigin = Boolean(appOrigin && originUrl.origin === appOrigin);
+        if (!matchesExpectedHost && !matchesAppOrigin) {
+          res.status(403).json({ error: 'CSRF check failed: Origin mismatch' });
+          return;
+        }
       }
     } catch {
       res.status(403).json({ error: 'CSRF check failed: malformed Origin header' });
@@ -233,6 +245,50 @@ export async function sendVerificationEmail(
   };
 }
 
+export async function sendPasswordResetEmail(
+  toEmail: string,
+  token: string
+): Promise<{ sent: boolean; previewUrl?: string; dev_token?: string }> {
+  const sanitizedEmail = toEmail.replace(/[\r\n]/g, '').trim();
+  const smtpHost = process.env.SMTP_HOST;
+  const appOrigin = (process.env.APP_ORIGIN || 'https://priceit.rbnd.cc').replace(/\/+$/, '');
+  const resetUrl = `${appOrigin}/?reset_password=${encodeURIComponent(token)}`;
+
+  if (smtpHost) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: parseInt(process.env.SMTP_PORT || '587', 10),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER || '',
+          pass: process.env.SMTP_PASS || '',
+        },
+        connectionTimeout: 5000,
+        greetingTimeout: 5000,
+        socketTimeout: 8000,
+      });
+
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM || '"PriceIt Security" <no-reply@priceit.rbnd.cc>',
+        to: sanitizedEmail,
+        subject: 'Reset your PriceIt account password',
+        text: `Hello,\n\nAn administrator or user requested a password reset for your PriceIt account.\n\nUse this password reset token:\n${token}\n\nOr click here to reset your password: ${resetUrl}\n\nThis link is valid for 1 hour.\nIf you did not expect this request, please contact your administrator.`,
+      });
+      return { sent: true };
+    } catch (err) {
+      console.error('[PriceIt SMTP Error]', err);
+    }
+  }
+
+  console.log(`[PriceIt Mailer] Password reset token for ${sanitizedEmail}: ${token} (${resetUrl})`);
+  return {
+    sent: true,
+    previewUrl: process.env.NODE_ENV === 'production' ? undefined : resetUrl,
+    dev_token: process.env.NODE_ENV === 'production' ? undefined : token,
+  };
+}
+
 export function getAuthenticatedUser(db: Database.Database, req: Request): UserPublic | null {
   const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token || typeof token !== 'string') return null;
@@ -281,12 +337,12 @@ export function getAuthenticatedUser(db: Database.Database, req: Request): UserP
 
   // Throttled last_active_at update (at most once every 5 minutes per session)
   const rawClientIp = req
-    ? req.headers['cf-connecting-ip'] ||
-      req.headers['x-real-ip'] ||
-      (typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'].split(',')[0].trim() : null) ||
-      req.ip
+    ? (process.env.TRUST_CLOUDFLARE === 'true' ? req.headers['cf-connecting-ip'] : null) ||
+      req.ip ||
+      req.socket?.remoteAddress
     : null;
-  const clientIp = typeof rawClientIp === 'string' ? rawClientIp.trim().slice(0, 100) : null;
+  const clientIp =
+    typeof rawClientIp === 'string' ? rawClientIp.trim().replace(/^::ffff:/, '').slice(0, 100) : null;
 
   if (!row.last_active_at || now - row.last_active_at > 5 * 60 * 1000) {
     try {

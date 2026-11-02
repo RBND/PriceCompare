@@ -3,7 +3,7 @@ import request from 'supertest';
 import { initDatabase } from '../src/server/db.js';
 import { createApp } from '../src/server/app.js';
 import { AuthRateLimiter } from '../src/server/auth.js';
-import { sanitizeSpreadsheetCell, generateProjectCsv } from '../src/shared/export.js';
+import { sanitizeSpreadsheetCell, generateProjectCsv, generateProjectExcelTsv } from '../src/shared/export.js';
 import { extractVendorFromUrl, isValidHttpUrl } from '../src/shared/types.js';
 import { DEMO_BRAKE_PROJECT } from '../src/shared/demoData.js';
 import { solveBundleOptimization } from '../src/shared/solver.js';
@@ -624,6 +624,147 @@ describe('Security Controls, Auth, OAuth Linking Safety, Idempotent Guest Migrat
       expect(startGoogleRes.headers.location).toContain(
         encodeURIComponent('/api/auth/oauth/google/callback')
       );
+
+      // 8. Rejects invalid OAuth provider in PUT /api/admin/oauth via UpdateOAuthConfigSchema
+      const invalidOAuthRes = await request(app)
+        .put('/api/admin/oauth')
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', adminCookie)
+        .send({
+          provider: 'malicious_provider',
+          client_id: 'abc',
+          enabled: true,
+        });
+      expect(invalidOAuthRes.status).toBe(400);
+    });
+
+    it('enforces admin force password reset lock and completes password recovery flow', async () => {
+      const adminReg = await request(app)
+        .post('/api/auth/register')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'admin@priceit.rbnd.cc',
+          password: 'AdminPassword123!',
+        });
+      const adminCookie = adminReg.headers['set-cookie'][0];
+
+      const userReg = await request(app)
+        .post('/api/auth/register')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'lockeduser@workshop.org',
+          password: 'OldPassword123!',
+        });
+      const targetUserId = userReg.body.user.id;
+
+      // Admin forces password reset
+      const resetRes = await request(app)
+        .post(`/api/admin/users/${targetUserId}/reset-password`)
+        .set('X-PriceIt-CSRF', '1')
+        .set('Cookie', adminCookie);
+      expect(resetRes.status).toBe(200);
+      expect(resetRes.body.reset_token).toBeTruthy();
+
+      // User cannot log in with old password while password_reset_required = 1
+      const blockedLogin = await request(app)
+        .post('/api/auth/login')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'lockeduser@workshop.org',
+          password: 'OldPassword123!',
+        });
+      expect(blockedLogin.status).toBe(403);
+      expect(blockedLogin.body.code).toBe('PASSWORD_RESET_REQUIRED');
+
+      // Complete password reset using the reset token
+      const completeRes = await request(app)
+        .post('/api/auth/password/reset-complete')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          token: resetRes.body.reset_token,
+          new_password: 'BrandNewPassword456!',
+        });
+      expect(completeRes.status).toBe(200);
+      expect(completeRes.body.ok).toBe(true);
+      expect(completeRes.body.user.email).toBe('lockeduser@workshop.org');
+
+      // Subsequent login with new password succeeds
+      const newLogin = await request(app)
+        .post('/api/auth/login')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          email: 'lockeduser@workshop.org',
+          password: 'BrandNewPassword456!',
+        });
+      expect(newLogin.status).toBe(200);
+    });
+
+    it('blocks simulated OAuth endpoints outside test environment and redacts private purchase fields on shares', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        const simRes = await request(app)
+          .post('/api/auth/oauth/callback')
+          .set('X-PriceIt-CSRF', '1')
+          .send({
+            provider: 'google',
+            provider_account_id: '123',
+            email: 'victim@example.com',
+          });
+        expect(simRes.status).toBe(403);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+
+      // Verify share link redacts private purchase order_number and notes
+      const agent = request.agent(app);
+      await agent.post('/api/auth/register').set('X-PriceIt-CSRF', '1').send({
+        email: 'sharer@workshop.org',
+        password: 'Password123!',
+      });
+
+      const createRes = await agent
+        .post('/api/projects')
+        .set('X-PriceIt-CSRF', '1')
+        .send({
+          ...DEMO_BRAKE_PROJECT,
+          purchases: [
+            {
+              id: 'purch-1',
+              part_id: DEMO_BRAKE_PROJECT.parts[0].id,
+              part_qty: 1,
+              vendor_name: 'RockAuto',
+              title: 'Brake Rotor',
+              actual_paid_cents: 4500,
+              order_number: 'SECRET-INVOICE-999',
+              notes: 'Private credit card note',
+              purchased_at: Date.now(),
+            },
+          ],
+        });
+      expect(createRes.status).toBe(201);
+
+      const shareRes = await agent
+        .post(`/api/projects/${createRes.body.project.id}/share`)
+        .set('X-PriceIt-CSRF', '1');
+      expect(shareRes.status).toBe(200);
+
+      const publicShare = await request(app).get(`/api/shares/${shareRes.body.share_token}`);
+      expect(publicShare.status).toBe(200);
+      expect(publicShare.body.project.purchases).toHaveLength(1);
+      expect(publicShare.body.project.purchases[0].order_number).toBeUndefined();
+      expect(publicShare.body.project.purchases[0].notes).toBeUndefined();
+
+      // Verify generateProjectExcelTsv produces tab-separated output
+      const solved = solveBundleOptimization({
+        parts: DEMO_BRAKE_PROJECT.parts,
+        offerings: DEMO_BRAKE_PROJECT.offerings,
+        bundle_mappings: DEMO_BRAKE_PROJECT.bundle_mappings,
+        vendor_profiles: DEMO_BRAKE_PROJECT.vendor_profiles,
+        default_tax_bps: DEMO_BRAKE_PROJECT.default_tax_bps,
+      });
+      const tsv = generateProjectExcelTsv(DEMO_BRAKE_PROJECT, solved);
+      expect(tsv).toContain('Project Name\t');
     });
   });
 });
